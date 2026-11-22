@@ -3,9 +3,9 @@ main = "worker.mjs"
 compatibility_date = "2026-01-01"
 
 [vars]
-AI_REVIEW_PROVIDER = "deepseek"
-AI_REVIEW_MODEL = "deepseek-chat"
-AI_REVIEW_BASE_URL = "https://api.deepseek.com/chat/completions"
+AI_REVIEW_PROVIDER = "opencode"
+AI_REVIEW_MODEL = "gemini-2.5-flash"
+AI_REVIEW_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 FALLBACK_WAIT_MINUTES = "12"
 REVIEW_MENTION_HANDLE = "@qsl-ai-reviewer review"
 

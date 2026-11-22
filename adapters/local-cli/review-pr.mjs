@@ -60,8 +60,8 @@ async function main() {
     const out = execFileSync('opencode', ['run', '--format', 'json', prompt], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
     verdict = parseVerdict(out);
   } else {
-    const apiKey = process.env.DEEPSEEK_API_KEY;
-    if (!apiKey) throw new Error('Missing DEEPSEEK_API_KEY');
+    const apiKey = process.env.AI_API_KEY || process.env.GEMINI_API_KEY || process.env.DEEPSEEK_API_KEY;
+    if (!apiKey) throw new Error('Missing AI_API_KEY, GEMINI_API_KEY, or DEEPSEEK_API_KEY');
     verdict = await runDeepSeekReview({
       apiKey,
       baseUrl: process.env.AI_REVIEW_BASE_URL,

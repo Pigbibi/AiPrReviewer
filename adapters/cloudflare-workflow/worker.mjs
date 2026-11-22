@@ -40,9 +40,9 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
 
     const verdict = await step.do('call-deepseek-api', async () => {
       return runDeepSeekReview({
-        apiKey: this.env.DEEPSEEK_API_KEY,
+        apiKey: this.env.AI_API_KEY || this.env.DEEPSEEK_API_KEY || this.env.GEMINI_API_KEY,
         baseUrl: this.env.AI_REVIEW_BASE_URL,
-        model: this.env.AI_REVIEW_MODEL || 'deepseek-chat',
+        model: this.env.AI_REVIEW_MODEL || 'gemini-2.5-flash',
         messages: reviewContext.messages,
       });
     });
