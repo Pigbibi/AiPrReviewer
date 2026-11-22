@@ -1,0 +1,15 @@
+name = "qsl-pr-reviewer"
+main = "worker.mjs"
+compatibility_date = "2026-01-01"
+
+[vars]
+AI_REVIEW_PROVIDER = "deepseek"
+AI_REVIEW_MODEL = "deepseek-chat"
+AI_REVIEW_BASE_URL = "https://api.deepseek.com/chat/completions"
+FALLBACK_WAIT_MINUTES = "12"
+REVIEW_MENTION_HANDLE = "@qsl-ai-reviewer review"
+
+[[workflows]]
+name = "qsl-pr-review-workflow"
+binding = "PR_REVIEW_WORKFLOW"
+class_name = "PrReviewWorkflow"
