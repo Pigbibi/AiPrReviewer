@@ -4,9 +4,9 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { verifyWebhookSignature, createAppJwt } from '../../packages/review-core/crypto.mjs';
-import { getInstallationToken, fetchPrContext, postPrComment } from '../../packages/review-core/github.mjs';
-import { hasReceiptForHead, isCodexQuotaComment, buildReviewDiff, shouldTriggerNow } from '../../packages/review-core/policy.mjs';
-import { buildReviewMessages, runDeepSeekReview } from '../../packages/review-core/provider.mjs';
+import { getInstallationToken, fetchPrContext, fetchRepoFile, postPrComment } from '../../packages/review-core/github.mjs';
+import { hasReceiptForHead, isCodexQuotaComment, isLowRiskRoutinePr, extractReferencedPaths, buildReviewDiff, shouldTriggerNow } from '../../packages/review-core/policy.mjs';
+import { buildReviewMessages, runDeepSeekReview, runAiServiceReview } from '../../packages/review-core/provider.mjs';
 import { formatReceiptComment } from '../../packages/review-core/receipt.mjs';
 
 export class PrReviewWorkflow extends WorkflowEntrypoint {
@@ -27,9 +27,16 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       if (hasReceiptForHead(ctx.comments, headSha)) return { skip: true, reason: 'already_reviewed' };
       const { diffText, truncated } = buildReviewDiff(ctx.files);
       if (!diffText) return { skip: true, reason: 'empty_diff' };
+      const refPaths = extractReferencedPaths(ctx.files, 3);
+      const relatedFiles = [];
+      for (const relPath of refPaths) {
+        const content = await fetchRepoFile(owner, repo, relPath, headSha, token);
+        if (content) relatedFiles.push({ path: relPath, content });
+      }
       return {
         skip: false,
-        messages: buildReviewMessages({ pr: ctx.pr, diffText, truncated, agentsMd: ctx.agentsMd }),
+        pr: { number: ctx.pr.number, title: ctx.pr.title },
+        messages: buildReviewMessages({ pr: ctx.pr, diffText, truncated, agentsMd: ctx.agentsMd, relatedFiles }),
         truncated,
       };
     });
@@ -39,6 +46,15 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
     }
 
     const verdict = await step.do('call-deepseek-api', async () => {
+      if (this.env.AI_SERVICE_URL) {
+        return runAiServiceReview({
+          serviceUrl: this.env.AI_SERVICE_URL,
+          serviceToken: this.env.AI_SERVICE_TOKEN,
+          project: `${owner}/${repo}`,
+          pr: reviewContext.pr,
+          messages: reviewContext.messages,
+        });
+      }
       return runDeepSeekReview({
         apiKey: this.env.AI_API_KEY || this.env.DEEPSEEK_API_KEY || this.env.GEMINI_API_KEY,
         baseUrl: this.env.AI_REVIEW_BASE_URL,
@@ -88,6 +104,12 @@ export default {
       if (payload.pull_request?.draft) return new Response('Draft skipped', { status: 202 });
       prNumber = payload.pull_request?.number;
       headSha = payload.pull_request?.head?.sha;
+      if (!immediate) {
+        immediate = isLowRiskRoutinePr({
+          headRef: payload.pull_request?.head?.ref || '',
+          title: payload.pull_request?.title || '',
+        });
+      }
     } else if (eventName === 'issue_comment' && payload.action === 'created' && payload.issue?.pull_request) {
       const body = payload.comment?.body || '';
       const login = payload.comment?.user?.login || '';

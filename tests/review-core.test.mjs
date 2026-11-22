@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyWebhookSignature, createAppJwt } from '../packages/review-core/crypto.mjs';
-import { hasReceiptForHead, isCodexQuotaComment, buildReviewDiff, shouldTriggerNow } from '../packages/review-core/policy.mjs';
-import { parseVerdict, runDeepSeekReview, buildReviewMessages } from '../packages/review-core/provider.mjs';
+import { hasReceiptForHead, isCodexQuotaComment, isLowRiskRoutinePr, extractReferencedPaths, buildReviewDiff, shouldTriggerNow } from '../packages/review-core/policy.mjs';
+import { parseVerdict, runDeepSeekReview, runAiServiceReview, buildReviewMessages } from '../packages/review-core/provider.mjs';
 import { formatReceiptComment } from '../packages/review-core/receipt.mjs';
 
 test('verifyWebhookSignature validates real HMAC-SHA256 and rejects tampered payloads', async () => {
@@ -73,4 +73,33 @@ test('provider and receipt formatter produce valid ai-review-receipt:v1', async 
     async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: '{"summary":"OK","unresolved_findings":false,"findings":[]}' } }] }) })
   );
   assert.equal(apiVerdict.summary, 'OK');
+});
+
+test('routine PR routing, referenced-file extraction, and AIService bridge work as expected', async () => {
+  assert.equal(isLowRiskRoutinePr({ headRef: 'chore/bump-pr-governance' }), true);
+  assert.equal(isLowRiskRoutinePr({ headRef: 'feat/risk-engine', files: [{ filename: 'README.md' }] }), true);
+  assert.equal(isLowRiskRoutinePr({ headRef: 'feat/risk-engine', files: [{ filename: 'src/risk.py' }] }), false);
+
+  const refs = extractReferencedPaths([
+    { filename: 'src/app/service.py', patch: '+from app.repo import Store\n+from .helper import run\n' },
+    { filename: 'src/web/index.mjs', patch: "+import { helper } from './utils.mjs'\n" },
+  ]);
+  assert.ok(refs.includes('app/repo.py'));
+  assert.ok(refs.includes('src/web/utils.mjs'));
+
+  const msgs = buildReviewMessages({
+    pr: { number: 7, title: 'feat: risk', body: '' },
+    diffText: '+x',
+    truncated: false,
+    agentsMd: '',
+    relatedFiles: [{ path: 'src/web/utils.mjs', content: 'export const x = 1;' }],
+  });
+  assert.match(msgs.user, /Related Referenced Files/);
+  assert.match(msgs.user, /src\/web\/utils\.mjs/);
+
+  const bridgeVerdict = await runAiServiceReview(
+    { serviceUrl: 'https://ai.example.test', serviceToken: 'tok', project: 'Org/Repo', pr: { number: 7, title: 'feat: risk' }, messages: msgs },
+    async () => ({ ok: true, json: async () => ({ result: { output: '{"summary":"Bridge OK","unresolved_findings":false,"findings":[]}' } }) })
+  );
+  assert.equal(bridgeVerdict.summary, 'Bridge OK');
 });

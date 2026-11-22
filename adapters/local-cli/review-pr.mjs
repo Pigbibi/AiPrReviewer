@@ -1,29 +1,46 @@
 #!/usr/bin/env node
 // Mac mini / local-cli adapter for private repositories.
-// Uses the private dedicated GitHub App (local-ai-reviewer[bot]) and DeepSeek API
-// (or opencode CLI when --opencode is passed) to post ai-review-receipt:v1.
+// Uses the private dedicated GitHub App (pigbibi-local-ai-reviewer[bot]) and either
+// an OpenAI-compatible API or a local subscription CLI (--engine opencode|gemini|claude|codex).
 
 import { readFileSync } from 'node:fs';
+import { createPrivateKey } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createAppJwt } from '../../packages/review-core/crypto.mjs';
-import { getInstallationToken, fetchPrContext, postPrComment } from '../../packages/review-core/github.mjs';
-import { hasReceiptForHead, buildReviewDiff } from '../../packages/review-core/policy.mjs';
+import { getInstallationToken, fetchPrContext, fetchRepoFile, postPrComment } from '../../packages/review-core/github.mjs';
+import { hasReceiptForHead, extractReferencedPaths, buildReviewDiff } from '../../packages/review-core/policy.mjs';
 import { buildReviewMessages, parseVerdict, runDeepSeekReview } from '../../packages/review-core/provider.mjs';
 import { formatReceiptComment } from '../../packages/review-core/receipt.mjs';
 
+function normalizePrivateKeyPem(pem) {
+  const text = String(pem || '');
+  if (text.includes('BEGIN PRIVATE KEY')) return text;
+  return createPrivateKey(text).export({ type: 'pkcs8', format: 'pem' }).toString();
+}
+
 function parseArgs(argv) {
-  const args = { opencode: false, dryRun: false };
+  const args = { engine: process.env.AI_REVIEW_ENGINE || 'api', dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--repo') args.repo = argv[++i];
     else if (a === '--pr') args.pr = Number(argv[++i]);
-    else if (a === '--opencode') args.opencode = true;
+    else if (a === '--opencode') args.engine = 'opencode';
+    else if (a === '--engine') args.engine = argv[++i];
     else if (a === '--dry-run') args.dryRun = true;
   }
   if (!args.repo || !args.repo.includes('/') || !args.pr) {
-    throw new Error('Usage: review-pr.mjs --repo <owner/name> --pr <number> [--opencode] [--dry-run]');
+    throw new Error('Usage: review-pr.mjs --repo <owner/name> --pr <number> [--engine api|opencode|gemini|claude|codex] [--dry-run]');
   }
   return args;
+}
+
+function runCliEngine(engine, prompt) {
+  const opts = { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 };
+  if (engine === 'opencode') return execFileSync('opencode', ['run', '--format', 'json', prompt], opts);
+  if (engine === 'gemini') return execFileSync('gemini', ['-p', prompt, '--output-format', 'text'], opts);
+  if (engine === 'claude') return execFileSync('claude', ['-p', prompt, '--output-format', 'text'], opts);
+  if (engine === 'codex') return execFileSync('codex', ['exec', prompt], opts);
+  throw new Error(`Unsupported CLI engine: ${engine}`);
 }
 
 async function main() {
@@ -32,11 +49,12 @@ async function main() {
   const appId = process.env.LOCAL_REVIEWER_APP_ID;
   const installationId = process.env.LOCAL_REVIEWER_INSTALLATION_ID;
   const keyPath = process.env.LOCAL_REVIEWER_PRIVATE_KEY_PATH;
-  const keyPem = process.env.LOCAL_REVIEWER_PRIVATE_KEY || (keyPath ? readFileSync(keyPath, 'utf8') : '');
-  if (!appId || !installationId || !keyPem) {
+  const rawPem = process.env.LOCAL_REVIEWER_PRIVATE_KEY || (keyPath ? readFileSync(keyPath, 'utf8') : '');
+  if (!appId || !installationId || !rawPem) {
     throw new Error('Set LOCAL_REVIEWER_APP_ID, LOCAL_REVIEWER_INSTALLATION_ID, and LOCAL_REVIEWER_PRIVATE_KEY(_PATH)');
   }
 
+  const keyPem = normalizePrivateKeyPem(rawPem);
   const jwt = await createAppJwt(appId, keyPem);
   const token = await getInstallationToken(jwt, installationId);
   const ctx = await fetchPrContext(owner, repo, args.pr, token);
@@ -48,16 +66,21 @@ async function main() {
   }
 
   const { diffText, truncated } = buildReviewDiff(ctx.files);
-  const messages = buildReviewMessages({ pr: ctx.pr, diffText, truncated, agentsMd: ctx.agentsMd });
+  const refPaths = extractReferencedPaths(ctx.files, 3);
+  const relatedFiles = [];
+  for (const relPath of refPaths) {
+    const content = await fetchRepoFile(owner, repo, relPath, headSha, token);
+    if (content) relatedFiles.push({ path: relPath, content });
+  }
+  const messages = buildReviewMessages({ pr: ctx.pr, diffText, truncated, agentsMd: ctx.agentsMd, relatedFiles });
 
   let verdict;
-  let provider = 'deepseek';
-  let model = process.env.AI_REVIEW_MODEL || 'deepseek-chat';
+  let provider = args.engine === 'api' ? (process.env.AI_REVIEW_PROVIDER || 'deepseek') : args.engine;
+  let model = process.env.AI_REVIEW_MODEL || (args.engine === 'api' ? 'gemini-4-hydrogen' : args.engine);
 
-  if (args.opencode) {
-    provider = 'opencode';
+  if (args.engine !== 'api') {
     const prompt = `${messages.system}\n\n${messages.user}`;
-    const out = execFileSync('opencode', ['run', '--format', 'json', prompt], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    const out = runCliEngine(args.engine, prompt);
     verdict = parseVerdict(out);
   } else {
     const apiKey = process.env.AI_API_KEY || process.env.GEMINI_API_KEY || process.env.DEEPSEEK_API_KEY;
