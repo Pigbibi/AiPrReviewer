@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyWebhookSignature, createAppJwt } from '../packages/review-core/crypto.mjs';
+import { verifyWebhookSignature, createAppJwt, getGcpAccessToken } from '../packages/review-core/crypto.mjs';
 import { hasReceiptForHead, isCodexQuotaComment, isLowRiskRoutinePr, extractReferencedPaths, buildReviewDiff, shouldTriggerNow } from '../packages/review-core/policy.mjs';
 import { parseVerdict, runDeepSeekReview, runAiServiceReview, buildReviewMessages } from '../packages/review-core/provider.mjs';
 import { formatReceiptComment } from '../packages/review-core/receipt.mjs';
@@ -102,4 +102,29 @@ test('routine PR routing, referenced-file extraction, and AIService bridge work 
     async () => ({ ok: true, json: async () => ({ result: { output: '{"summary":"Bridge OK","unresolved_findings":false,"findings":[]}' } }) })
   );
   assert.equal(bridgeVerdict.summary, 'Bridge OK');
+});
+
+test('getGcpAccessToken exchanges signed RS256 assertion for OAuth2 token', async () => {
+  const kp = await crypto.subtle.generateKey(
+    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+    true,
+    ['sign', 'verify']
+  );
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', kp.privateKey));
+  let b64 = '';
+  for (let i = 0; i < pkcs8.length; i++) b64 += String.fromCharCode(pkcs8[i]);
+  const pem = `-----BEGIN PRIVATE KEY-----\n${btoa(b64)}\n-----END PRIVATE KEY-----`;
+  const sa = {
+    project_id: 'synthetic-proj',
+    client_email: 'reviewer@synthetic-proj.iam.gserviceaccount.com',
+    private_key: pem,
+  };
+  let capturedBody = '';
+  const out = await getGcpAccessToken(sa, async (_url, opts) => {
+    capturedBody = opts.body;
+    return { ok: true, json: async () => ({ access_token: 'ya29.synthetic' }) };
+  }, 1700000000);
+  assert.equal(out.accessToken, 'ya29.synthetic');
+  assert.equal(out.projectId, 'synthetic-proj');
+  assert.match(capturedBody, /grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer/);
 });

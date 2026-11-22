@@ -3,7 +3,7 @@
 // limited by Workers Free 30s waitUntil wall-clock timeout.
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
-import { verifyWebhookSignature, createAppJwt } from '../../packages/review-core/crypto.mjs';
+import { verifyWebhookSignature, createAppJwt, getGcpAccessToken } from '../../packages/review-core/crypto.mjs';
 import { getInstallationToken, fetchPrContext, fetchRepoFile, postPrComment } from '../../packages/review-core/github.mjs';
 import { hasReceiptForHead, isCodexQuotaComment, isLowRiskRoutinePr, extractReferencedPaths, buildReviewDiff, shouldTriggerNow } from '../../packages/review-core/policy.mjs';
 import { buildReviewMessages, runDeepSeekReview, runAiServiceReview } from '../../packages/review-core/provider.mjs';
@@ -55,10 +55,20 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
           messages: reviewContext.messages,
         });
       }
+      let apiKey = this.env.AI_API_KEY || this.env.DEEPSEEK_API_KEY || this.env.GEMINI_API_KEY;
+      let baseUrl = this.env.AI_REVIEW_BASE_URL;
+      if (!apiKey && this.env.GCP_SERVICE_ACCOUNT_JSON) {
+        const gcp = await getGcpAccessToken(this.env.GCP_SERVICE_ACCOUNT_JSON);
+        apiKey = gcp.accessToken;
+        if (!baseUrl && gcp.projectId) {
+          const loc = this.env.GCP_VERTEX_LOCATION || 'global';
+          baseUrl = `https://aiplatform.googleapis.com/v1/projects/${gcp.projectId}/locations/${loc}/endpoints/openapi/chat/completions`;
+        }
+      }
       return runDeepSeekReview({
-        apiKey: this.env.AI_API_KEY || this.env.DEEPSEEK_API_KEY || this.env.GEMINI_API_KEY,
-        baseUrl: this.env.AI_REVIEW_BASE_URL,
-        model: this.env.AI_REVIEW_MODEL || 'gemini-2.5-flash',
+        apiKey,
+        baseUrl,
+        model: this.env.AI_REVIEW_MODEL || 'gemini-4-hydrogen',
         messages: reviewContext.messages,
       });
     });

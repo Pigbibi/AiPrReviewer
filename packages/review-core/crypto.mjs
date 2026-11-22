@@ -55,3 +55,45 @@ export async function createAppJwt(appId, privateKeyPem, nowSec = Math.floor(Dat
   const sig = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(signingInput)));
   return `${signingInput}.${base64UrlEncode(sig)}`;
 }
+
+export async function getGcpAccessToken(saJson, fetchImpl = fetch, nowSec = Math.floor(Date.now() / 1000)) {
+  const sa = typeof saJson === 'string' ? JSON.parse(saJson) : saJson;
+  if (!sa?.client_email || !sa?.private_key) {
+    throw new Error('Invalid GCP service account JSON');
+  }
+  const enc = new TextEncoder();
+  const header = base64UrlEncode(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
+  const tokenUri = sa.token_uri || 'https://oauth2.googleapis.com/token';
+  const payload = base64UrlEncode(enc.encode(JSON.stringify({
+    iss: sa.client_email,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+    aud: tokenUri,
+    iat: nowSec,
+    exp: nowSec + 3600,
+  })));
+  const signingInput = `${header}.${payload}`;
+  const key = await crypto.subtle.importKey(
+    'pkcs8',
+    pemToPkcs8(sa.private_key),
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(signingInput)));
+  const assertion = `${signingInput}.${base64UrlEncode(sig)}`;
+
+  const res = await fetchImpl(tokenUri, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion,
+    }).toString(),
+  });
+  if (!res.ok) {
+    throw new Error(`GCP OAuth token exchange failed with HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  if (!data?.access_token) throw new Error('Missing access_token in GCP OAuth response');
+  return { accessToken: data.access_token, projectId: sa.project_id || '' };
+}

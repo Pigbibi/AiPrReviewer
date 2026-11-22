@@ -4,8 +4,8 @@ compatibility_date = "2026-01-01"
 
 [vars]
 AI_REVIEW_PROVIDER = "opencode"
-AI_REVIEW_MODEL = "gemini-4-hydrogen"
-AI_REVIEW_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+AI_REVIEW_MODEL = "google/gemini-4-hydrogen"
+GCP_VERTEX_LOCATION = "global"
 FALLBACK_WAIT_MINUTES = "12"
 REVIEW_MENTION_HANDLE = "@pigbibi-ai-reviewer review"
 
