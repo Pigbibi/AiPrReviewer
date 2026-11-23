@@ -8,16 +8,59 @@ export const RECEIPT_MARKERS = [
 
 export const QUOTA_PATTERN = /\b(?:usage\s+limit|rate\s*limit|quota\s+(?:exceeded|reached|exhausted)|out\s+of\s+credits?|limit\s+reached|try\s+again\s+later)\b|额度已用完|达到上限/i;
 
-const SKIP_DIFF_PATH = /(?:^|\/)(?:package-lock\.json|uv\.lock|poetry\.lock|yarn\.lock|pnpm-lock\.yaml|cargo\.lock|gemfile\.lock)$|(?:^|\/)fixtures(?:\/|$)/i;
+const SKIP_DIFF_PATH = /(?:^|\/)(?:package-lock\.json|uv\.lock|poetry\.lock|yarn\.lock|pnpm-lock\.yaml|cargo\.lock|gemfile\.lock)$|(?:^|\/)fixtures(?:\/|$)|(?:\.generated\.[^/]+|\.min\.(?:js|css)|\.map)$/i;
 const ROUTINE_BRANCH_RE = /^(?:chore\/bump-|docs\/)/i;
 const DOC_ONLY_PATH_RE = /\.(?:md|txt|rst)$/i;
 
+function extractMarkerPayload(body, marker) {
+  const idx = body.indexOf(marker);
+  if (idx < 0) return null;
+  const start = idx + marker.length;
+  const end = body.indexOf('-->', start);
+  if (end < 0) return null;
+  const raw = body.slice(start, end).trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+export function isCodexRunningForHead(comments, headSha) {
+  return comments.some(c => {
+    if (typeof c.body !== 'string' || !c.body.includes(headSha)) return false;
+    const state = extractMarkerPayload(c.body, 'codex-review-state:v1');
+    return Boolean(
+      state
+      && state.code_review
+      && state.code_review.commit_sha === headSha
+      && state.code_review.status !== 'completed'
+    );
+  });
+}
+
 export function hasReceiptForHead(comments, headSha) {
-  return comments.some(c =>
-    typeof c.body === 'string'
-    && c.body.includes(headSha)
-    && RECEIPT_MARKERS.some(m => c.body.includes(m))
-  );
+  return comments.some(c => {
+    if (typeof c.body !== 'string' || !c.body.includes(headSha)) return false;
+    if (c.body.includes('codex-review-state:v1')) {
+      const state = extractMarkerPayload(c.body, 'codex-review-state:v1');
+      return Boolean(
+        state
+        && state.code_review
+        && state.code_review.commit_sha === headSha
+        && state.code_review.status === 'completed'
+      );
+    }
+    if (c.body.includes('ai-review-receipt:v1')) {
+      const receipt = extractMarkerPayload(c.body, 'ai-review-receipt:v1');
+      if (receipt && receipt.review) {
+        return receipt.review.commit_sha === headSha
+          && (!receipt.review.status || receipt.review.status === 'completed');
+      }
+    }
+    return RECEIPT_MARKERS.some(m => m !== 'codex-review-state:v1' && c.body.includes(m));
+  });
 }
 
 export function isCodexQuotaComment(body, userLogin = '') {
@@ -77,21 +120,66 @@ export function extractReferencedPaths(files, maxPaths = 3) {
   return candidates.slice(0, maxPaths);
 }
 
-export function buildReviewDiff(files, maxChars = 60000) {
-  let diffText = '';
+function formatDiffSection(file) {
+  return `\n### ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})\n\`\`\`diff\n${file.patch}\n\`\`\`\n`;
+}
+
+export function buildReviewBatches(files, { maxChars = 80000, maxBatches = 6 } = {}) {
+  const batches = [];
+  const allReviewableFiles = [];
+  let currentText = '';
+  let currentFiles = [];
   let truncated = false;
-  const includedFiles = [];
+
   for (const file of files) {
     if (!file.patch || SKIP_DIFF_PATH.test(file.filename || '')) continue;
-    const section = `\n### ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})\n\`\`\`diff\n${file.patch}\n\`\`\`\n`;
-    if (diffText.length + section.length > maxChars) {
+    allReviewableFiles.push(file.filename);
+    const section = formatDiffSection(file);
+
+    if (section.length > maxChars) {
       truncated = true;
-      break;
+      if (currentText) {
+        if (batches.length >= maxBatches) break;
+        batches.push({ diffText: currentText, files: currentFiles });
+        currentText = '';
+        currentFiles = [];
+      }
+      if (batches.length >= maxBatches) break;
+      batches.push({ diffText: section.slice(0, maxChars), files: [file.filename] });
+      continue;
     }
-    diffText += section;
-    includedFiles.push(file.filename);
+
+    if (currentText && currentText.length + section.length > maxChars) {
+      batches.push({ diffText: currentText, files: currentFiles });
+      currentText = '';
+      currentFiles = [];
+      if (batches.length >= maxBatches) {
+        truncated = true;
+        break;
+      }
+    }
+
+    currentText += section;
+    currentFiles.push(file.filename);
   }
-  return { diffText, truncated, includedFiles };
+
+  if (currentText && batches.length < maxBatches) {
+    batches.push({ diffText: currentText, files: currentFiles });
+  } else if (currentText) {
+    truncated = true;
+  }
+
+  return { batches, allReviewableFiles, truncated };
+}
+
+export function buildReviewDiff(files, maxChars = 60000) {
+  const { batches, truncated } = buildReviewBatches(files, { maxChars, maxBatches: 1 });
+  const first = batches[0];
+  return {
+    diffText: first ? first.diffText : '',
+    truncated,
+    includedFiles: first ? first.files : [],
+  };
 }
 
 export function shouldTriggerNow({ eventName, action, commentBody, mentionHandle }) {

@@ -5,17 +5,54 @@
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { verifyWebhookSignature, createAppJwt, getGcpAccessToken } from '../../packages/review-core/crypto.mjs';
 import { getInstallationToken, fetchPrContext, fetchRepoFile, postPrComment } from '../../packages/review-core/github.mjs';
-import { hasReceiptForHead, isCodexQuotaComment, isLowRiskRoutinePr, extractReferencedPaths, buildReviewDiff, shouldTriggerNow } from '../../packages/review-core/policy.mjs';
-import { buildReviewMessages, runDeepSeekReview, runAiServiceReview } from '../../packages/review-core/provider.mjs';
+import {
+  hasReceiptForHead,
+  isCodexRunningForHead,
+  isCodexQuotaComment,
+  isLowRiskRoutinePr,
+  extractReferencedPaths,
+  buildReviewBatches,
+  shouldTriggerNow,
+} from '../../packages/review-core/policy.mjs';
+import {
+  buildReviewMessages,
+  executeReviewWithFallback,
+  mergeBatchVerdicts,
+} from '../../packages/review-core/provider.mjs';
 import { formatReceiptComment } from '../../packages/review-core/receipt.mjs';
 
 export class PrReviewWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const { owner, repo, prNumber, installationId, headSha, immediate } = event.payload;
     const waitMinutes = Number(this.env.FALLBACK_WAIT_MINUTES ?? '12');
+    const probeMinutes = Math.min(waitMinutes, Number(this.env.CODEX_PROBE_MINUTES ?? '2'));
 
     if (!immediate && waitMinutes > 0) {
-      await step.sleep('wait-for-primary-reviewer', `${waitMinutes} minutes`);
+      if (probeMinutes > 0) {
+        await step.sleep('probe-primary-reviewer', `${probeMinutes} minutes`);
+      }
+
+      const probe = await step.do('check-primary-reviewer', async () => {
+        const jwt = await createAppJwt(this.env.GITHUB_APP_ID, this.env.GITHUB_APP_PRIVATE_KEY);
+        const token = await getInstallationToken(jwt, installationId);
+        const ctx = await fetchPrContext(owner, repo, prNumber, token);
+        if (ctx.pr.state !== 'open' || ctx.pr.draft) return { proceed: false, reason: 'closed_or_draft' };
+        if (ctx.pr.head.sha !== headSha) return { proceed: false, reason: 'stale_head' };
+        if (hasReceiptForHead(ctx.comments, headSha)) return { proceed: false, reason: 'already_reviewed' };
+        const codexRunning = isCodexRunningForHead(ctx.comments, headSha);
+        return {
+          proceed: true,
+          waitRemainingMinutes: codexRunning ? Math.max(0, waitMinutes - probeMinutes) : 0,
+        };
+      });
+
+      if (!probe.proceed) {
+        return { status: 'skipped', reason: probe.reason };
+      }
+
+      if (probe.waitRemainingMinutes > 0) {
+        await step.sleep('wait-active-primary', `${probe.waitRemainingMinutes} minutes`);
+      }
     }
 
     const reviewContext = await step.do('fetch-pr-context', async () => {
@@ -25,8 +62,8 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       if (ctx.pr.state !== 'open' || ctx.pr.draft) return { skip: true, reason: 'closed_or_draft' };
       if (ctx.pr.head.sha !== headSha) return { skip: true, reason: 'stale_head' };
       if (hasReceiptForHead(ctx.comments, headSha)) return { skip: true, reason: 'already_reviewed' };
-      const { diffText, truncated } = buildReviewDiff(ctx.files);
-      if (!diffText) return { skip: true, reason: 'empty_diff' };
+      const { batches, allReviewableFiles, truncated } = buildReviewBatches(ctx.files);
+      if (!batches.length) return { skip: true, reason: 'empty_diff' };
       const refPaths = extractReferencedPaths(ctx.files, 3);
       const relatedFiles = [];
       for (const relPath of refPaths) {
@@ -35,8 +72,11 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       }
       return {
         skip: false,
-        pr: { number: ctx.pr.number, title: ctx.pr.title },
-        messages: buildReviewMessages({ pr: ctx.pr, diffText, truncated, agentsMd: ctx.agentsMd, relatedFiles }),
+        pr: { number: ctx.pr.number, title: ctx.pr.title, body: ctx.pr.body || '' },
+        agentsMd: ctx.agentsMd || '',
+        relatedFiles,
+        batches,
+        allReviewableFiles,
         truncated,
       };
     });
@@ -45,48 +85,56 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       return { status: 'skipped', reason: reviewContext.reason };
     }
 
-    const verdict = await step.do('call-deepseek-api', async () => {
-      if (this.env.AI_SERVICE_URL) {
-        return runAiServiceReview({
-          serviceUrl: this.env.AI_SERVICE_URL,
-          serviceToken: this.env.AI_SERVICE_TOKEN,
+    const batchResults = [];
+    const totalBatches = reviewContext.batches.length;
+    for (let i = 0; i < totalBatches; i++) {
+      const batch = reviewContext.batches[i];
+      const result = await step.do(`review-batch-${i + 1}`, async () => {
+        const messages = buildReviewMessages({
+          pr: reviewContext.pr,
+          diffText: batch.diffText,
+          truncated: reviewContext.truncated,
+          agentsMd: reviewContext.agentsMd,
+          relatedFiles: i === 0 ? reviewContext.relatedFiles : [],
+          batchIndex: i,
+          totalBatches,
+          allFiles: reviewContext.allReviewableFiles,
+        });
+        return executeReviewWithFallback({
+          env: this.env,
           project: `${owner}/${repo}`,
           pr: reviewContext.pr,
-          messages: reviewContext.messages,
+          messages,
+          getGcpToken: getGcpAccessToken,
         });
-      }
-      let apiKey = this.env.AI_API_KEY || this.env.DEEPSEEK_API_KEY || this.env.GEMINI_API_KEY;
-      let baseUrl = this.env.AI_REVIEW_BASE_URL;
-      if (!apiKey && this.env.GCP_SERVICE_ACCOUNT_JSON) {
-        const gcp = await getGcpAccessToken(this.env.GCP_SERVICE_ACCOUNT_JSON);
-        apiKey = gcp.accessToken;
-        if (!baseUrl && gcp.projectId) {
-          const loc = this.env.GCP_VERTEX_LOCATION || 'global';
-          baseUrl = `https://aiplatform.googleapis.com/v1/projects/${gcp.projectId}/locations/${loc}/endpoints/openapi/chat/completions`;
-        }
-      }
-      return runDeepSeekReview({
-        apiKey,
-        baseUrl,
-        model: this.env.AI_REVIEW_MODEL || 'gemini-4-hydrogen',
-        messages: reviewContext.messages,
       });
-    });
+      batchResults.push(result);
+    }
+
+    const merged = mergeBatchVerdicts(batchResults);
 
     await step.do('post-receipt-comment', async () => {
       const jwt = await createAppJwt(this.env.GITHUB_APP_ID, this.env.GITHUB_APP_PRIVATE_KEY);
       const token = await getInstallationToken(jwt, installationId);
       const body = formatReceiptComment({
         headSha,
-        provider: this.env.AI_REVIEW_PROVIDER || 'deepseek',
-        model: this.env.AI_REVIEW_MODEL || 'deepseek-chat',
-        verdict,
+        provider: merged.provider,
+        model: merged.model,
+        verdict: merged.verdict,
         truncated: reviewContext.truncated,
       });
       await postPrComment(owner, repo, prNumber, body, token);
     });
 
-    return { status: 'reviewed', headSha, unresolved: verdict.unresolved_findings };
+    return {
+      status: 'reviewed',
+      headSha,
+      provider: merged.provider,
+      model: merged.model,
+      batches: totalBatches,
+      truncated: reviewContext.truncated,
+      unresolved: merged.verdict.unresolved_findings,
+    };
   }
 }
 
