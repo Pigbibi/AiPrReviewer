@@ -112,6 +112,17 @@ test('routine PR routing, referenced-file extraction, and AIService bridge work 
   });
   assert.match(msgs.user, /Related Referenced Files/);
   assert.match(msgs.user, /src\/web\/utils\.mjs/);
+  assert.doesNotMatch(msgs.user, /High-Risk Security Checklist/);
+
+  const secMsgs = buildReviewMessages({
+    pr: { number: 8, title: 'ci: tighten workflow', body: '' },
+    diffText: 'diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n+permissions: read-all',
+    truncated: false,
+    agentsMd: '',
+    allFiles: ['.github/workflows/ci.yml'],
+  });
+  assert.match(secMsgs.user, /High-Risk Security Checklist/);
+  assert.match(secMsgs.user, /\.github\/workflows\/ci\.yml/);
 
   const bridgeVerdict = await runAiServiceReview(
     { serviceUrl: 'https://ai.example.test', serviceToken: 'tok', project: 'Org/Repo', pr: { number: 7, title: 'feat: risk' }, messages: msgs },

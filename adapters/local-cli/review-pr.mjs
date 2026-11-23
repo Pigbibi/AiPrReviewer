@@ -65,14 +65,21 @@ async function main() {
     return;
   }
 
-  const { diffText, truncated } = buildReviewDiff(ctx.files);
+  const { diffText, truncated, includedFiles } = buildReviewDiff(ctx.files);
   const refPaths = extractReferencedPaths(ctx.files, 3);
   const relatedFiles = [];
   for (const relPath of refPaths) {
     const content = await fetchRepoFile(owner, repo, relPath, headSha, token);
     if (content) relatedFiles.push({ path: relPath, content });
   }
-  const messages = buildReviewMessages({ pr: ctx.pr, diffText, truncated, agentsMd: ctx.agentsMd, relatedFiles });
+  const messages = buildReviewMessages({
+    pr: ctx.pr,
+    diffText,
+    truncated,
+    agentsMd: ctx.agentsMd,
+    relatedFiles,
+    allFiles: includedFiles,
+  });
 
   let verdict;
   let provider = args.engine === 'api' ? (process.env.AI_REVIEW_PROVIDER || 'opencode') : args.engine;
