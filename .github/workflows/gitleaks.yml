@@ -1,0 +1,24 @@
+name: Secret scan
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan added commits
+        uses: Pigbibi/PrGovernance/pr-governance@be53dc11553bb295a52bfef07bbe61a482e93d55
+        with:
+          mode: scan
