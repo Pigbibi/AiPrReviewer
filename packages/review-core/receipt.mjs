@@ -6,6 +6,7 @@ export function formatReceiptComment({ headSha, provider = 'deepseek', model = '
       provider,
       model,
       commit_sha: headSha,
+      status: 'completed',
       coverage: truncated ? 'partial' : 'complete',
       unresolved_findings: verdict.unresolved_findings,
     },
