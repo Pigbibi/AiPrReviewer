@@ -75,7 +75,7 @@ async function main() {
   const messages = buildReviewMessages({ pr: ctx.pr, diffText, truncated, agentsMd: ctx.agentsMd, relatedFiles });
 
   let verdict;
-  let provider = args.engine === 'api' ? (process.env.AI_REVIEW_PROVIDER || 'deepseek') : args.engine;
+  let provider = args.engine === 'api' ? (process.env.AI_REVIEW_PROVIDER || 'opencode') : args.engine;
   let model = process.env.AI_REVIEW_MODEL || (args.engine === 'api' ? 'gemini-4-hydrogen' : args.engine);
 
   if (args.engine !== 'api') {
