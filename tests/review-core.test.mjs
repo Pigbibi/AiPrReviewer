@@ -1,8 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyWebhookSignature, createAppJwt, getGcpAccessToken } from '../packages/review-core/crypto.mjs';
-import { hasReceiptForHead, isCodexQuotaComment, isLowRiskRoutinePr, extractReferencedPaths, buildReviewDiff, shouldTriggerNow } from '../packages/review-core/policy.mjs';
-import { parseVerdict, runDeepSeekReview, runAiServiceReview, buildReviewMessages } from '../packages/review-core/provider.mjs';
+import {
+  hasReceiptForHead,
+  isCodexRunningForHead,
+  isCodexQuotaComment,
+  isLowRiskRoutinePr,
+  extractReferencedPaths,
+  buildReviewDiff,
+  buildReviewBatches,
+  shouldTriggerNow,
+} from '../packages/review-core/policy.mjs';
+import {
+  parseVerdict,
+  runDeepSeekReview,
+  runAiServiceReview,
+  buildReviewMessages,
+  executeReviewWithFallback,
+  mergeBatchVerdicts,
+} from '../packages/review-core/provider.mjs';
 import { formatReceiptComment } from '../packages/review-core/receipt.mjs';
 
 test('verifyWebhookSignature validates real HMAC-SHA256 and rejects tampered payloads', async () => {
@@ -127,4 +143,136 @@ test('getGcpAccessToken exchanges signed RS256 assertion for OAuth2 token', asyn
   assert.equal(out.accessToken, 'ya29.synthetic');
   assert.equal(out.projectId, 'synthetic-proj');
   assert.match(capturedBody, /grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer/);
+});
+
+test('hasReceiptForHead distinguishes running vs completed codex-review-state markers', () => {
+  const head = 'c'.repeat(40);
+  const runningComment = {
+    body: `<!-- codex-review-state:v1 {"code_review":{"commit_sha":"${head}","has_any_findings":null,"has_unresolved_findings":null,"status":"running"}} -->`,
+  };
+  const completedComment = {
+    body: `<!-- codex-review-state:v1 {"code_review":{"commit_sha":"${head}","has_any_findings":false,"has_unresolved_findings":false,"status":"completed"}} -->`,
+  };
+  assert.equal(isCodexRunningForHead([runningComment], head), true);
+  assert.equal(hasReceiptForHead([runningComment], head), false);
+  assert.equal(isCodexRunningForHead([completedComment], head), false);
+  assert.equal(hasReceiptForHead([completedComment], head), true);
+});
+
+test('buildReviewBatches chunks large diffs cleanly and never skips executable generated files', () => {
+  const mkFile = (filename, size) => ({
+    filename,
+    status: 'modified',
+    additions: 10,
+    deletions: 2,
+    patch: '+' + 'x'.repeat(size),
+  });
+  const res = buildReviewBatches(
+    [
+      mkFile('src/a.py', 90),
+      mkFile('uv.lock', 5000),
+      mkFile('frontend/src/catalog/small.generated.js', 60),
+      mkFile('src/b.py', 90),
+      mkFile('src/c.py', 90),
+    ],
+    { maxChars: 170, maxBatches: 6 }
+  );
+  assert.equal(res.truncated, false);
+  assert.deepEqual(res.allReviewableFiles, [
+    'src/a.py',
+    'frontend/src/catalog/small.generated.js',
+    'src/b.py',
+    'src/c.py',
+  ]);
+  assert.equal(res.batches.length, 4);
+
+  const capped = buildReviewBatches(
+    [mkFile('src/a.py', 90), mkFile('src/b.py', 90), mkFile('src/c.py', 90)],
+    { maxChars: 170, maxBatches: 2 }
+  );
+  assert.equal(capped.truncated, true);
+  assert.equal(capped.batches.length, 2);
+
+  const oversized = buildReviewBatches([mkFile('src/giant.py', 250)], { maxChars: 170, maxBatches: 2 });
+  assert.equal(oversized.truncated, true);
+  assert.equal(oversized.batches.length, 1);
+
+  const oversizedAtCap = buildReviewBatches(
+    [mkFile('src/giant1.py', 250), mkFile('src/giant2.py', 250), mkFile('src/small1.py', 50), mkFile('src/small2.py', 50)],
+    { maxChars: 170, maxBatches: 2 }
+  );
+  assert.equal(oversizedAtCap.truncated, true);
+  assert.equal(oversizedAtCap.batches.length, 2);
+});
+
+test('executeReviewWithFallback keeps Vertex primary and falls back to DeepSeek on failure', async () => {
+  const messages = buildReviewMessages({
+    pr: { number: 9, title: 'refactor: split', body: '' },
+    diffText: '+a',
+    truncated: false,
+    agentsMd: '',
+    batchIndex: 0,
+    totalBatches: 2,
+    allFiles: ['a.py', 'b.py'],
+  });
+  assert.match(messages.user, /Review Batch 1\/2/);
+
+  const baseEnv = {
+    AI_REVIEW_PROVIDER: 'opencode',
+    AI_REVIEW_MODEL: 'google/gemini-4-hydrogen',
+    GCP_SERVICE_ACCOUNT_JSON: '{"project_id":"synthetic"}',
+    DEEPSEEK_API_KEY: 'sk-ds-fallback',
+  };
+  const calls = [];
+  const primaryOk = await executeReviewWithFallback(
+    {
+      env: baseEnv,
+      project: 'Org/Repo',
+      pr: { number: 9, title: 'refactor: split' },
+      messages,
+      getGcpToken: async () => ({ accessToken: 'gcp-tok', projectId: 'synthetic-proj' }),
+    },
+    async (url) => {
+      calls.push(url);
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: '{"summary":"Vertex OK","unresolved_findings":false,"findings":[]}' } }] }),
+      };
+    }
+  );
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /aiplatform\.googleapis\.com/);
+  assert.equal(primaryOk.provider, 'opencode');
+  assert.equal(primaryOk.model, 'google/gemini-4-hydrogen');
+
+  const fallbackCalls = [];
+  const fallbackOk = await executeReviewWithFallback(
+    {
+      env: baseEnv,
+      project: 'Org/Repo',
+      pr: { number: 9, title: 'refactor: split' },
+      messages,
+      getGcpToken: async () => ({ accessToken: 'gcp-tok', projectId: 'synthetic-proj' }),
+    },
+    async (url, opts) => {
+      fallbackCalls.push({ url, model: JSON.parse(opts.body).model });
+      if (url.includes('aiplatform.googleapis.com')) {
+        return { ok: false, status: 429, text: async () => 'quota exhausted' };
+      }
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: '{"summary":"DeepSeek OK","unresolved_findings":true,"findings":[{"severity":"medium","file":"a.py","message":"bug"}]}' } }] }),
+      };
+    }
+  );
+  assert.equal(fallbackCalls.length, 2);
+  assert.equal(fallbackCalls[1].url, 'https://api.deepseek.com/chat/completions');
+  assert.equal(fallbackCalls[1].model, 'deepseek-chat');
+  assert.equal(fallbackOk.provider, 'deepseek');
+  assert.equal(fallbackOk.model, 'deepseek-chat');
+
+  const merged = mergeBatchVerdicts([primaryOk, fallbackOk]);
+  assert.equal(merged.verdict.unresolved_findings, true);
+  assert.equal(merged.verdict.findings.length, 1);
+  assert.equal(merged.provider, 'deepseek');
 });

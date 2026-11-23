@@ -6,6 +6,7 @@ compatibility_date = "2026-01-01"
 AI_REVIEW_PROVIDER = "opencode"
 AI_REVIEW_MODEL = "google/gemini-4-hydrogen"
 GCP_VERTEX_LOCATION = "global"
+CODEX_PROBE_MINUTES = "2"
 FALLBACK_WAIT_MINUTES = "12"
 REVIEW_MENTION_HANDLE = "@pigbibi-ai-reviewer review"
 
