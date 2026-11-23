@@ -146,6 +146,7 @@ export function buildReviewBatches(files, { maxChars = 80000, maxBatches = 6 } =
       }
       if (batches.length >= maxBatches) break;
       batches.push({ diffText: section.slice(0, maxChars), files: [file.filename] });
+      if (batches.length >= maxBatches) break;
       continue;
     }
 

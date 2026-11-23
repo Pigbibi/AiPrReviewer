@@ -190,6 +190,13 @@ test('buildReviewBatches chunks large diffs cleanly and skips generated bundles'
   const oversized = buildReviewBatches([mkFile('src/giant.py', 250)], { maxChars: 170, maxBatches: 2 });
   assert.equal(oversized.truncated, true);
   assert.equal(oversized.batches.length, 1);
+
+  const oversizedAtCap = buildReviewBatches(
+    [mkFile('src/giant1.py', 250), mkFile('src/giant2.py', 250), mkFile('src/small1.py', 50), mkFile('src/small2.py', 50)],
+    { maxChars: 170, maxBatches: 2 }
+  );
+  assert.equal(oversizedAtCap.truncated, true);
+  assert.equal(oversizedAtCap.batches.length, 2);
 });
 
 test('executeReviewWithFallback keeps Vertex primary and falls back to DeepSeek on failure', async () => {
