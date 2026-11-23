@@ -1,5 +1,23 @@
 // Provider adapter for OpenAI-compatible Chat Completions API and AIService bridge.
 
+const HIGH_RISK_SECURITY_PATH_RE =
+  /^(?:\.github\/workflows\/|deploy\/|ops\/|.*wrangler.*\.toml$|.*(?:auth|oauth|login|session|jwt|token|secret|key|crypto|webhook|signature|permission|rbac|iam|payment|charge|order|trade|execution|risk|sql|migration|security).*)/i;
+
+export function detectHighRiskSecurityPaths({ allFiles = [], diffText = '' } = {}) {
+  const candidates = new Set(
+    (Array.isArray(allFiles) ? allFiles : []).map(f => String(f || '').trim()).filter(Boolean)
+  );
+  for (const line of String(diffText || '').split('\n')) {
+    if (line.startsWith('diff --git a/')) {
+      const m = /^diff --git a\/.+ b\/(.+)$/.exec(line);
+      if (m) candidates.add(m[1].trim());
+    } else if (line.startsWith('+++ b/')) {
+      candidates.add(line.slice(6).trim());
+    }
+  }
+  return [...candidates].filter(filePath => HIGH_RISK_SECURITY_PATH_RE.test(filePath));
+}
+
 export function buildReviewMessages({
   pr,
   diffText,
@@ -10,12 +28,24 @@ export function buildReviewMessages({
   totalBatches = 1,
   allFiles = [],
 }) {
+  const highRiskPaths = detectHighRiskSecurityPaths({ allFiles, diffText });
   const system = [
     'You are a strict senior code reviewer.',
     'Check the PR diff and related referenced files for correctness bugs, security leaks, architecture boundary violations, silent error swallowing, missing tests, and duplicated/over-complex AI-slop code.',
     'Return ONLY valid JSON: {"summary": string, "unresolved_findings": boolean, "findings": [{"severity": "high"|"medium"|"low", "file": string, "message": string}]}.',
     'Set unresolved_findings=true ONLY when there is at least one high or medium severity bug, security issue, or missing critical test.',
   ].join(' ');
+
+  const securityChecklistSection = highRiskPaths.length
+    ? [
+        `## High-Risk Security Checklist (triggered by: ${highRiskPaths.slice(0, 10).join(', ')})`,
+        '1. Credentials, tokens, and signing secrets: verify none are hardcoded, echoed in logs, or leaked in error responses.',
+        '2. AuthN/AuthZ and signature verification: verify privilege boundaries, HMAC/JWT checks, and fail-closed guards are not weakened or bypassed.',
+        '3. External inputs: check for command injection, SQL/path traversal, SSRF, or unvalidated redirects.',
+        '4. CI/deploy configs: verify GitHub Actions permissions stay minimal and third-party actions remain SHA-pinned.',
+        '5. Trading/execution paths: verify risk gates, idempotency, and fail-closed safety invariants are preserved.',
+      ].join('\n')
+    : '';
 
   const relatedSection = relatedFiles.length
     ? '## Related Referenced Files (read-only context)\n' + relatedFiles
@@ -33,6 +63,7 @@ export function buildReviewMessages({
     `## PR #${pr.number}: ${pr.title}`,
     pr.body ? `### Description\n${pr.body.slice(0, 2000)}\n` : '',
     batchHeader,
+    securityChecklistSection,
     relatedSection,
     `## Diff${truncated ? ' (truncated)' : ''}${diffText}`,
   ].filter(Boolean).join('\n');
