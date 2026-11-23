@@ -1,0 +1,82 @@
+name: PR risk gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled, ready_for_review, closed]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_run:
+    workflows: ["PR review signal"]
+    types: [completed]
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Existing pull request number to evaluate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  statuses: write
+  actions: write
+
+jobs:
+  record_label:
+    name: Record the head a clearing label was added to
+    if: github.event_name == 'pull_request_target' && github.event.action == 'labeled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Record label head
+        uses: Pigbibi/PrGovernance/pr-governance@be53dc11553bb295a52bfef07bbe61a482e93d55
+        env:
+          GOVERNANCE_OWNER_ID: ${{ vars.RISK_GATE_OWNER_ID }}
+          GOVERNANCE_OWNER_LOGIN: ${{ vars.RISK_GATE_OWNER }}
+        with:
+          mode: gate
+          record-label: 'true'
+
+  evaluate:
+    name: Evaluate PR governance
+    needs: record_label
+    if: >-
+      always() && needs.record_label.result != 'cancelled' &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request &&
+        (github.event.comment.user.type == 'Bot' ||
+         contains(github.event.comment.body || '', 'codex-review') ||
+         contains(github.event.comment.body || '', 'ai-review-receipt'))))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      statuses: write
+      actions: write
+    concurrency:
+      group: pr-governance-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || inputs.pr_number || github.run_id }}
+      cancel-in-progress: true
+    steps:
+      - name: Evaluate
+        uses: Pigbibi/PrGovernance/pr-governance@be53dc11553bb295a52bfef07bbe61a482e93d55
+        env:
+          GOVERNANCE_OWNER_ID: ${{ vars.RISK_GATE_OWNER_ID }}
+          GOVERNANCE_OWNER_LOGIN: ${{ vars.RISK_GATE_OWNER }}
+          GOVERNANCE_REVIEWER_APP_ID: ${{ vars.RISK_GATE_REVIEWER_APP_ID }}
+          GOVERNANCE_REVIEWER_USER_ID: ${{ vars.RISK_GATE_REVIEWER_USER_ID }}
+          GOVERNANCE_REVIEWER_LOGIN: ${{ vars.RISK_GATE_REVIEWER_LOGIN }}
+          GOVERNANCE_REVIEWERS_JSON: ${{ vars.GOVERNANCE_REVIEWERS_JSON }}
+        with:
+          mode: gate
+          record-label: 'false'
