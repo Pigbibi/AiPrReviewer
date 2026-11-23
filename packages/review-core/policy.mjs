@@ -8,7 +8,7 @@ export const RECEIPT_MARKERS = [
 
 export const QUOTA_PATTERN = /\b(?:usage\s+limit|rate\s*limit|quota\s+(?:exceeded|reached|exhausted)|out\s+of\s+credits?|limit\s+reached|try\s+again\s+later)\b|额度已用完|达到上限/i;
 
-const SKIP_DIFF_PATH = /(?:^|\/)(?:package-lock\.json|uv\.lock|poetry\.lock|yarn\.lock|pnpm-lock\.yaml|cargo\.lock|gemfile\.lock)$|(?:^|\/)fixtures(?:\/|$)|(?:\.generated\.[^/]+|\.min\.(?:js|css)|\.map)$/i;
+const SKIP_DIFF_PATH = /(?:^|\/)(?:package-lock\.json|uv\.lock|poetry\.lock|yarn\.lock|pnpm-lock\.yaml|cargo\.lock|gemfile\.lock)$|(?:^|\/)fixtures(?:\/|$)/i;
 const ROUTINE_BRANCH_RE = /^(?:chore\/bump-|docs\/)/i;
 const DOC_ONLY_PATH_RE = /\.(?:md|txt|rst)$/i;
 

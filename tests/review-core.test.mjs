@@ -159,7 +159,7 @@ test('hasReceiptForHead distinguishes running vs completed codex-review-state ma
   assert.equal(hasReceiptForHead([completedComment], head), true);
 });
 
-test('buildReviewBatches chunks large diffs cleanly and skips generated bundles', () => {
+test('buildReviewBatches chunks large diffs cleanly and never skips executable generated files', () => {
   const mkFile = (filename, size) => ({
     filename,
     status: 'modified',
@@ -170,15 +170,21 @@ test('buildReviewBatches chunks large diffs cleanly and skips generated bundles'
   const res = buildReviewBatches(
     [
       mkFile('src/a.py', 90),
-      mkFile('frontend/src/catalog/locationCatalogData.generated.js', 5000),
+      mkFile('uv.lock', 5000),
+      mkFile('frontend/src/catalog/small.generated.js', 60),
       mkFile('src/b.py', 90),
       mkFile('src/c.py', 90),
     ],
     { maxChars: 170, maxBatches: 6 }
   );
   assert.equal(res.truncated, false);
-  assert.deepEqual(res.allReviewableFiles, ['src/a.py', 'src/b.py', 'src/c.py']);
-  assert.equal(res.batches.length, 3);
+  assert.deepEqual(res.allReviewableFiles, [
+    'src/a.py',
+    'frontend/src/catalog/small.generated.js',
+    'src/b.py',
+    'src/c.py',
+  ]);
+  assert.equal(res.batches.length, 4);
 
   const capped = buildReviewBatches(
     [mkFile('src/a.py', 90), mkFile('src/b.py', 90), mkFile('src/c.py', 90)],
