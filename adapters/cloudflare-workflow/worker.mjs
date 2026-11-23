@@ -143,7 +143,10 @@ export default {
     }
 
     if (!prNumber || !headSha) return new Response('Missing PR head', { status: 202 });
-    const instanceId = `${owner}-${repo}-${prNumber}-${headSha.slice(0, 12)}`.replace(/[^A-Za-z0-9_-]/g, '_');
+    const baseId = `${owner}-${repo}-${prNumber}-${headSha.slice(0, 12)}`.replace(/[^A-Za-z0-9_-]/g, '_');
+    const instanceId = eventName === 'issue_comment'
+      ? `${baseId}-m${String(payload.comment?.id || Date.now())}`
+      : baseId;
     await env.PR_REVIEW_WORKFLOW.create({
       id: instanceId,
       params: { owner, repo, prNumber, installationId, headSha, immediate },
