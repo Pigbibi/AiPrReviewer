@@ -8,11 +8,10 @@ import { getInstallationToken, fetchPrContext, fetchRepoFile, postPrComment } fr
 import {
   hasReceiptForHead,
   isCodexRunningForHead,
-  isCodexQuotaComment,
-  isLowRiskRoutinePr,
   extractReferencedPaths,
   buildReviewBatches,
-  shouldTriggerNow,
+  shouldSkipPrState,
+  planPullRequestWebhook,
 } from '../../packages/review-core/policy.mjs';
 import {
   buildReviewMessages,
@@ -23,7 +22,15 @@ import { formatReceiptComment } from '../../packages/review-core/receipt.mjs';
 
 export class PrReviewWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
-    const { owner, repo, prNumber, installationId, headSha, immediate } = event.payload;
+    const {
+      owner,
+      repo,
+      prNumber,
+      installationId,
+      headSha,
+      immediate,
+      allowDraft = false,
+    } = event.payload;
     const waitMinutes = Number(this.env.FALLBACK_WAIT_MINUTES ?? '12');
     const probeMinutes = Math.min(waitMinutes, Number(this.env.CODEX_PROBE_MINUTES ?? '2'));
 
@@ -36,7 +43,7 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
         const jwt = await createAppJwt(this.env.GITHUB_APP_ID, this.env.GITHUB_APP_PRIVATE_KEY);
         const token = await getInstallationToken(jwt, installationId);
         const ctx = await fetchPrContext(owner, repo, prNumber, token);
-        if (ctx.pr.state !== 'open' || ctx.pr.draft) return { proceed: false, reason: 'closed_or_draft' };
+        if (shouldSkipPrState(ctx.pr, { allowDraft })) return { proceed: false, reason: 'closed_or_draft' };
         if (ctx.pr.head.sha !== headSha) return { proceed: false, reason: 'stale_head' };
         if (hasReceiptForHead(ctx.comments, headSha)) return { proceed: false, reason: 'already_reviewed' };
         const codexRunning = isCodexRunningForHead(ctx.comments, headSha);
@@ -59,7 +66,7 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       const jwt = await createAppJwt(this.env.GITHUB_APP_ID, this.env.GITHUB_APP_PRIVATE_KEY);
       const token = await getInstallationToken(jwt, installationId);
       const ctx = await fetchPrContext(owner, repo, prNumber, token);
-      if (ctx.pr.state !== 'open' || ctx.pr.draft) return { skip: true, reason: 'closed_or_draft' };
+      if (shouldSkipPrState(ctx.pr, { allowDraft })) return { skip: true, reason: 'closed_or_draft' };
       if (ctx.pr.head.sha !== headSha) return { skip: true, reason: 'stale_head' };
       if (hasReceiptForHead(ctx.comments, headSha)) return { skip: true, reason: 'already_reviewed' };
       const { batches, allReviewableFiles, truncated } = buildReviewBatches(ctx.files);
@@ -149,55 +156,36 @@ export default {
 
     const eventName = request.headers.get('X-GitHub-Event') || '';
     const payload = JSON.parse(rawBody);
-    const installationId = payload.installation?.id;
-    const owner = payload.repository?.owner?.login;
-    const repo = payload.repository?.name;
-    if (!installationId || !owner || !repo) return new Response('Ignored', { status: 202 });
+    const plan = planPullRequestWebhook({
+      eventName,
+      payload,
+      mentionHandle: env.REVIEW_MENTION_HANDLE || '@ai-reviewer review',
+      fallbackWaitMinutes: env.FALLBACK_WAIT_MINUTES ?? '12',
+    });
+    if (plan.action === 'ignore') {
+      return new Response(plan.reason, { status: 202 });
+    }
 
-    let prNumber = null;
-    let headSha = null;
-    let immediate = Number(env.FALLBACK_WAIT_MINUTES ?? '12') === 0;
-
-    if (eventName === 'pull_request' && shouldTriggerNow({ eventName, action: payload.action })) {
-      if (payload.pull_request?.draft) return new Response('Draft skipped', { status: 202 });
-      prNumber = payload.pull_request?.number;
-      headSha = payload.pull_request?.head?.sha;
-      if (!immediate) {
-        immediate = isLowRiskRoutinePr({
-          headRef: payload.pull_request?.head?.ref || '',
-          title: payload.pull_request?.title || '',
-        });
-      }
-    } else if (eventName === 'issue_comment' && payload.action === 'created' && payload.issue?.pull_request) {
-      const body = payload.comment?.body || '';
-      const login = payload.comment?.user?.login || '';
-      const mentioned = shouldTriggerNow({
-        eventName,
-        action: payload.action,
-        commentBody: body,
-        mentionHandle: env.REVIEW_MENTION_HANDLE || '@ai-reviewer review',
-      });
-      if (!mentioned && !isCodexQuotaComment(body, login)) {
-        return new Response('Comment ignored', { status: 202 });
-      }
-      immediate = true;
-      prNumber = payload.issue.number;
+    const { owner, repo, installationId, prNumber, immediate, allowDraft } = plan;
+    let headSha = plan.headSha || null;
+    if (plan.action === 'fetch_and_dispatch') {
       const jwt = await createAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
       const token = await getInstallationToken(jwt, installationId);
       const ctx = await fetchPrContext(owner, repo, prNumber, token);
+      if (shouldSkipPrState(ctx.pr, { allowDraft })) {
+        return new Response('Closed or draft skipped', { status: 202 });
+      }
       headSha = ctx.pr.head.sha;
-    } else {
-      return new Response('Event ignored', { status: 202 });
     }
 
     if (!prNumber || !headSha) return new Response('Missing PR head', { status: 202 });
     const baseId = `${owner}-${repo}-${prNumber}-${headSha.slice(0, 12)}`.replace(/[^A-Za-z0-9_-]/g, '_');
-    const instanceId = eventName === 'issue_comment'
-      ? `${baseId}-m${String(payload.comment?.id || Date.now())}`
+    const instanceId = plan.source === 'issue_comment'
+      ? `${baseId}-m${String(plan.commentId || Date.now())}`
       : baseId;
     await env.PR_REVIEW_WORKFLOW.create({
       id: instanceId,
-      params: { owner, repo, prNumber, installationId, headSha, immediate },
+      params: { owner, repo, prNumber, installationId, headSha, immediate, allowDraft },
     });
 
     return Response.json({ accepted: true, instanceId }, { status: 202 });
