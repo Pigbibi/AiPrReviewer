@@ -183,6 +183,12 @@ export function buildReviewDiff(files, maxChars = 60000) {
   };
 }
 
+export function shouldSkipPrState(pr, { allowDraft = false } = {}) {
+  if (!pr || pr.state !== 'open') return true;
+  if (pr.draft && !allowDraft) return true;
+  return false;
+}
+
 export function shouldTriggerNow({ eventName, action, commentBody, mentionHandle }) {
   if (eventName === 'pull_request') {
     return ['opened', 'synchronize', 'reopened', 'ready_for_review'].includes(action);
@@ -192,4 +198,68 @@ export function shouldTriggerNow({ eventName, action, commentBody, mentionHandle
     return false;
   }
   return false;
+}
+
+export function planPullRequestWebhook({ eventName, payload, mentionHandle, fallbackWaitMinutes = 12 }) {
+  const installationId = payload?.installation?.id;
+  const owner = payload?.repository?.owner?.login;
+  const repo = payload?.repository?.name;
+  if (!installationId || !owner || !repo) {
+    return { action: 'ignore', reason: 'Ignored' };
+  }
+
+  const defaultImmediate = Number(fallbackWaitMinutes ?? 12) === 0;
+
+  if (eventName === 'pull_request' && shouldTriggerNow({ eventName, action: payload?.action })) {
+    if (payload?.pull_request?.draft) {
+      return { action: 'ignore', reason: 'Draft skipped' };
+    }
+    const prNumber = payload?.pull_request?.number;
+    const headSha = payload?.pull_request?.head?.sha;
+    if (!prNumber || !headSha) {
+      return { action: 'ignore', reason: 'Missing PR head' };
+    }
+    const immediate = defaultImmediate || isLowRiskRoutinePr({
+      headRef: payload?.pull_request?.head?.ref || '',
+      title: payload?.pull_request?.title || '',
+    });
+    return {
+      action: 'dispatch',
+      source: 'pull_request',
+      owner,
+      repo,
+      installationId,
+      prNumber,
+      headSha,
+      immediate,
+      allowDraft: false,
+    };
+  }
+
+  if (eventName === 'issue_comment' && payload?.action === 'created' && payload?.issue?.pull_request) {
+    const body = payload?.comment?.body || '';
+    const login = payload?.comment?.user?.login || '';
+    const mentioned = shouldTriggerNow({
+      eventName,
+      action: payload.action,
+      commentBody: body,
+      mentionHandle: mentionHandle || '@ai-reviewer review',
+    });
+    if (!mentioned && !isCodexQuotaComment(body, login)) {
+      return { action: 'ignore', reason: 'Comment ignored' };
+    }
+    return {
+      action: 'fetch_and_dispatch',
+      source: 'issue_comment',
+      owner,
+      repo,
+      installationId,
+      prNumber: payload.issue.number,
+      commentId: payload?.comment?.id,
+      immediate: true,
+      allowDraft: Boolean(mentioned),
+    };
+  }
+
+  return { action: 'ignore', reason: 'Event ignored' };
 }

@@ -10,6 +10,8 @@ import {
   buildReviewDiff,
   buildReviewBatches,
   shouldTriggerNow,
+  shouldSkipPrState,
+  planPullRequestWebhook,
 } from '../packages/review-core/policy.mjs';
 import {
   parseVerdict,
@@ -286,4 +288,53 @@ test('executeReviewWithFallback keeps Vertex primary and falls back to DeepSeek 
   assert.equal(merged.verdict.unresolved_findings, true);
   assert.equal(merged.verdict.findings.length, 1);
   assert.equal(merged.provider, 'deepseek');
+});
+
+test('shouldSkipPrState and planPullRequestWebhook support mention-triggered drafts while skipping auto drafts', () => {
+  assert.equal(shouldSkipPrState({ state: 'open', draft: false }), false);
+  assert.equal(shouldSkipPrState({ state: 'open', draft: true }), true);
+  assert.equal(shouldSkipPrState({ state: 'open', draft: true }, { allowDraft: true }), false);
+  assert.equal(shouldSkipPrState({ state: 'closed', draft: true }, { allowDraft: true }), true);
+  assert.equal(shouldSkipPrState({ state: 'closed', draft: false }, { allowDraft: true }), true);
+
+  const autoDraft = planPullRequestWebhook({
+    eventName: 'pull_request',
+    payload: {
+      action: 'opened',
+      installation: { id: 1 },
+      repository: { owner: { login: 'Org' }, name: 'Repo' },
+      pull_request: { number: 3, draft: true, head: { sha: 'd'.repeat(40), ref: 'feat/x' }, title: 't' },
+    },
+    mentionHandle: '@qsl-ai-reviewer review',
+  });
+  assert.deepEqual(autoDraft, { action: 'ignore', reason: 'Draft skipped' });
+
+  const mentionDraft = planPullRequestWebhook({
+    eventName: 'issue_comment',
+    payload: {
+      action: 'created',
+      installation: { id: 1 },
+      repository: { owner: { login: 'Org' }, name: 'Repo' },
+      issue: { number: 3, pull_request: {} },
+      comment: { id: 99, body: '@qsl-ai-reviewer review', user: { login: 'maintainer' } },
+    },
+    mentionHandle: '@qsl-ai-reviewer review',
+  });
+  assert.equal(mentionDraft.action, 'fetch_and_dispatch');
+  assert.equal(mentionDraft.immediate, true);
+  assert.equal(mentionDraft.allowDraft, true);
+
+  const codexQuota = planPullRequestWebhook({
+    eventName: 'issue_comment',
+    payload: {
+      action: 'created',
+      installation: { id: 1 },
+      repository: { owner: { login: 'Org' }, name: 'Repo' },
+      issue: { number: 4, pull_request: {} },
+      comment: { id: 100, body: 'Usage limit reached.', user: { login: 'chatgpt-codex-connector[bot]' } },
+    },
+    mentionHandle: '@qsl-ai-reviewer review',
+  });
+  assert.equal(codexQuota.action, 'fetch_and_dispatch');
+  assert.equal(codexQuota.allowDraft, false);
 });
