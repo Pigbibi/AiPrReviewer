@@ -82,16 +82,26 @@ export function isCodexQuotaComment(body, userLogin = '') {
   return /codex/i.test(userLogin) && typeof body === 'string' && QUOTA_PATTERN.test(body);
 }
 
+const TRUSTED_CODEX_LOGINS = new Set(['chatgpt-codex-connector[bot]', 'chatgpt-codex-connector']);
+const TRUSTED_CLAUDE_LOGINS = new Set(['claude[bot]']);
+
+function trustedSubscriptionProvider(user) {
+  const login = String(user?.login || '').trim().toLowerCase();
+  if (TRUSTED_CODEX_LOGINS.has(login)) return 'codex';
+  if (TRUSTED_CLAUDE_LOGINS.has(login)) return 'claude';
+  return null;
+}
+
 export function detectQuotaProviders(comments = [], { maxAgeMs = 30 * 60 * 1000, now = Date.now() } = {}) {
   const providers = new Set();
   for (const c of comments) {
-    const login = String(c?.user?.login || '');
+    const provider = trustedSubscriptionProvider(c?.user);
+    if (!provider) continue;
     const body = typeof c?.body === 'string' ? c.body : '';
     if (!QUOTA_PATTERN.test(body)) continue;
     const ts = Date.parse(c?.created_at || '');
     if (Number.isFinite(ts) && Number.isFinite(maxAgeMs) && now - ts > maxAgeMs) continue;
-    if (/codex/i.test(login)) providers.add('codex');
-    if (/claude/i.test(login)) providers.add('claude');
+    providers.add(provider);
   }
   return [...providers];
 }
@@ -99,13 +109,14 @@ export function detectQuotaProviders(comments = [], { maxAgeMs = 30 * 60 * 1000,
 export function detectActiveSubscriptionProviders(comments = [], headSha = '') {
   const providers = new Set();
   for (const c of comments) {
-    const login = String(c?.user?.login || '');
+    const provider = trustedSubscriptionProvider(c?.user);
+    if (!provider) continue;
     const body = typeof c?.body === 'string' ? c.body : '';
     if (!headSha || !body.includes(headSha)) continue;
-    if (/codex/i.test(login) && (body.includes('codex-review-state:v1') || body.includes('ai-review-receipt:v1'))) {
+    if (provider === 'codex' && (body.includes('codex-review-state:v1') || body.includes('ai-review-receipt:v1'))) {
       providers.add('codex');
     }
-    if (/claude/i.test(login) && body.includes('ai-review-receipt:v1')) {
+    if (provider === 'claude' && body.includes('ai-review-receipt:v1')) {
       providers.add('claude');
     }
   }

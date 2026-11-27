@@ -134,6 +134,11 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       const ctx = await fetchPrContext(owner, repo, prNumber, token);
       if (shouldSkipPrState(ctx.pr, { allowDraft })) return { skip: true, reason: 'closed_or_draft' };
       if (ctx.pr.head.sha !== headSha) return { skip: true, reason: 'stale_head' };
+      const now = Date.now();
+      const quotaProviders = detectQuotaProviders(ctx.comments, { now });
+      if (quotaProviders.length) {
+        await saveProviderStates(this.env, owner, updateCircuitState({}, { quotaProviders, now }));
+      }
       if (hasReceiptForHead(ctx.comments, headSha)) return { skip: true, reason: 'already_reviewed' };
       const { batches, allReviewableFiles, truncated } = buildReviewBatches(ctx.files);
       if (!batches.length) return { skip: true, reason: 'empty_diff' };

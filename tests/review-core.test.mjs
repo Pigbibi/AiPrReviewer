@@ -373,6 +373,7 @@ test('adaptive circuit breaker routes automatically without manual switches', ()
   const comments = [
     { user: { login: 'claude[bot]' }, body: `<!-- ai-review-receipt:v1 {"review":{"commit_sha":"${head}","status":"completed"}} -->` },
     { user: { login: 'chatgpt-codex-connector[bot]' }, body: 'Usage limit reached. Try again later.' },
+    { user: { login: 'fake-claude-user' }, body: 'Usage limit reached. Try again later.' },
   ];
   assert.deepEqual(detectActiveSubscriptionProviders(comments, head), ['claude']);
   assert.deepEqual(detectQuotaProviders(comments), ['codex']);
