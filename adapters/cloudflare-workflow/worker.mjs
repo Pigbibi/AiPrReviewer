@@ -18,6 +18,7 @@ import {
 } from '../../packages/review-core/policy.mjs';
 import {
   buildReviewMessages,
+  reviewPathsFromFiles,
   requiredProviderCountForReview,
   executeReviewWithFallback,
   mergeBatchVerdicts,
@@ -106,7 +107,7 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
         const activeProviders = detectActiveSubscriptionProviders(ctx.comments, headSha, { minTimestampByProvider });
         const existingProviders = collectTrustedReviewProviders(ctx.comments, headSha, { reviewerProviders });
         const requiredProviders = requiredProviderCountForReview({
-          allFiles: ctx.files.map(file => file.filename).filter(Boolean),
+          allFiles: reviewPathsFromFiles(ctx.files),
         });
         const needsApiProvider = shouldRunApiReviewer({
           provider,
@@ -181,7 +182,7 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       }
       const existingProviders = collectTrustedReviewProviders(ctx.comments, headSha, { reviewerProviders });
       const requiredProviders = requiredProviderCountForReview({
-        allFiles: ctx.files.map(file => file.filename).filter(Boolean),
+        allFiles: reviewPathsFromFiles(ctx.files),
       });
       if (!shouldRunApiReviewer({
         provider,
