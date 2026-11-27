@@ -51,6 +51,9 @@ async function main() {
   if (!appId || !installationId || !rawPem) {
     throw new Error('Set LOCAL_REVIEWER_APP_ID, LOCAL_REVIEWER_INSTALLATION_ID, and LOCAL_REVIEWER_PRIVATE_KEY(_PATH)');
   }
+  if (!String(process.env.REVIEWER_LOGIN || '').trim()) {
+    throw new Error('Set REVIEWER_LOGIN to the authenticated GitHub App bot login');
+  }
 
   const keyPem = normalizePrivateKeyPem(rawPem);
   const jwt = await createAppJwt(appId, keyPem);
