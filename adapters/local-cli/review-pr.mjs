@@ -7,10 +7,19 @@ import { readFileSync } from 'node:fs';
 import { createPrivateKey } from 'node:crypto';
 import { createAppJwt } from '../../packages/review-core/crypto.mjs';
 import { getInstallationToken, fetchPrContext, fetchRepoFile, postPrComment } from '../../packages/review-core/github.mjs';
-import { hasReceiptForHead, extractReferencedPaths, buildReviewDiff } from '../../packages/review-core/policy.mjs';
-import { buildReviewMessages, runDeepSeekReview } from '../../packages/review-core/provider.mjs';
+import {
+  collectTrustedReviewProviders,
+  reviewerProvidersFromEnv,
+  extractReferencedPaths,
+  buildReviewDiff,
+} from '../../packages/review-core/policy.mjs';
+import {
+  buildReviewMessages,
+  requiredProviderCountForReview,
+  executeReviewWithFallback,
+} from '../../packages/review-core/provider.mjs';
 import { formatReceiptComment } from '../../packages/review-core/receipt.mjs';
-import { flagsFromEnv, selectReviewRoute } from '../../packages/review-core/route.mjs';
+import { shouldRunApiReviewer } from '../../packages/review-core/route.mjs';
 
 function normalizePrivateKeyPem(pem) {
   const text = String(pem || '');
@@ -49,13 +58,15 @@ async function main() {
   const ctx = await fetchPrContext(owner, repo, args.pr, token);
   const headSha = ctx.pr.head.sha;
 
-  if (hasReceiptForHead(ctx.comments, headSha)) {
-    console.log(`PR #${args.pr} (${headSha.slice(0, 7)}) already has an AI review receipt.`);
-    return;
-  }
-  const route = selectReviewRoute(flagsFromEnv(process.env));
-  if (route.kind !== 'deepseek') {
-    console.log(`Subscription reviewer is enabled (${route.providers.join(', ')}); DeepSeek was not called.`);
+  const provider = String(process.env.AI_REVIEW_PROVIDER || 'deepseek').trim().toLowerCase();
+  const role = String(process.env.AI_REVIEW_PROVIDER_ROLE || 'primary').trim().toLowerCase();
+  const reviewerProviders = reviewerProvidersFromEnv(process.env);
+  const existingProviders = collectTrustedReviewProviders(ctx.comments, headSha, { reviewerProviders });
+  const requiredProviders = requiredProviderCountForReview({
+    allFiles: ctx.files.map(file => file.filename).filter(Boolean),
+  });
+  if (!shouldRunApiReviewer({ provider, role, existingProviders, requiredProviders })) {
+    console.log(`Review quorum already satisfied or ${provider} is not required for this PR.`);
     return;
   }
 
@@ -75,27 +86,25 @@ async function main() {
     allFiles: includedFiles,
   });
 
-  const model = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) throw new Error('Missing DEEPSEEK_API_KEY');
-  const verdict = await runDeepSeekReview({
-    apiKey,
-    baseUrl: process.env.DEEPSEEK_BASE_URL,
-    model,
-    messages,
-  });
-  const provider = 'deepseek';
+  const result = await executeReviewWithFallback({ env: process.env, messages });
 
-  const body = formatReceiptComment({ headSha, provider, model, verdict, truncated });
+  const body = formatReceiptComment({
+    headSha,
+    provider: result.provider,
+    model: result.model,
+    verdict: result.verdict,
+    truncated,
+  });
   if (args.dryRun) {
     console.log(body);
     return;
   }
   await postPrComment(owner, repo, args.pr, body, token);
-  console.log(`Posted ${provider} receipt for ${args.repo}#${args.pr} at ${headSha.slice(0, 7)}`);
+  console.log(`Posted ${result.provider} receipt for ${args.repo}#${args.pr} at ${headSha.slice(0, 7)}`);
 }
 
 main().catch(err => {
   console.error(err.message);
   process.exit(1);
 });
+
