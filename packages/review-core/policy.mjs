@@ -27,6 +27,21 @@ function extractMarkerPayload(body, marker) {
   }
 }
 
+export function isReviewInProgressForHead(comments, headSha) {
+  if (isCodexRunningForHead(comments, headSha)) return true;
+  return comments.some(comment => {
+    if (typeof comment.body !== 'string' || !comment.body.includes(headSha)) return false;
+    const receipt = extractMarkerPayload(comment.body, 'ai-review-receipt:v1');
+    return Boolean(
+      receipt
+      && receipt.review
+      && receipt.review.commit_sha === headSha
+      && receipt.review.status
+      && receipt.review.status !== 'completed'
+    );
+  });
+}
+
 export function isCodexRunningForHead(comments, headSha) {
   return comments.some(c => {
     if (typeof c.body !== 'string' || !c.body.includes(headSha)) return false;

@@ -3,11 +3,11 @@
 // limited by Workers Free 30s waitUntil wall-clock timeout.
 
 import { WorkflowEntrypoint } from 'cloudflare:workers';
-import { verifyWebhookSignature, createAppJwt, getGcpAccessToken } from '../../packages/review-core/crypto.mjs';
+import { verifyWebhookSignature, createAppJwt } from '../../packages/review-core/crypto.mjs';
 import { getInstallationToken, fetchPrContext, fetchRepoFile, postPrComment } from '../../packages/review-core/github.mjs';
 import {
   hasReceiptForHead,
-  isCodexRunningForHead,
+  isReviewInProgressForHead,
   extractReferencedPaths,
   buildReviewBatches,
   shouldSkipPrState,
@@ -18,6 +18,7 @@ import {
   executeReviewWithFallback,
   mergeBatchVerdicts,
 } from '../../packages/review-core/provider.mjs';
+import { flagsFromEnv, selectReviewRoute } from '../../packages/review-core/route.mjs';
 import { formatReceiptComment } from '../../packages/review-core/receipt.mjs';
 
 export class PrReviewWorkflow extends WorkflowEntrypoint {
@@ -33,8 +34,9 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
     } = event.payload;
     const waitMinutes = Number(this.env.FALLBACK_WAIT_MINUTES ?? '12');
     const probeMinutes = Math.min(waitMinutes, Number(this.env.CODEX_PROBE_MINUTES ?? '2'));
+    const route = selectReviewRoute(flagsFromEnv(this.env));
 
-    if (!immediate && waitMinutes > 0) {
+    if (!immediate && route.kind === 'subscription' && waitMinutes > 0) {
       if (probeMinutes > 0) {
         await step.sleep('probe-primary-reviewer', `${probeMinutes} minutes`);
       }
@@ -46,7 +48,7 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
         if (shouldSkipPrState(ctx.pr, { allowDraft })) return { proceed: false, reason: 'closed_or_draft' };
         if (ctx.pr.head.sha !== headSha) return { proceed: false, reason: 'stale_head' };
         if (hasReceiptForHead(ctx.comments, headSha)) return { proceed: false, reason: 'already_reviewed' };
-        const codexRunning = isCodexRunningForHead(ctx.comments, headSha);
+        const codexRunning = isReviewInProgressForHead(ctx.comments, headSha);
         return {
           proceed: true,
           waitRemainingMinutes: codexRunning ? Math.max(0, waitMinutes - probeMinutes) : 0,
@@ -109,10 +111,7 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
         });
         return executeReviewWithFallback({
           env: this.env,
-          project: `${owner}/${repo}`,
-          pr: reviewContext.pr,
           messages,
-          getGcpToken: getGcpAccessToken,
         });
       });
       batchResults.push(result);

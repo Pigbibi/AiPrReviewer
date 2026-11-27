@@ -218,7 +218,7 @@ test('buildReviewBatches chunks large diffs cleanly and never skips executable g
   assert.equal(oversizedAtCap.batches.length, 2);
 });
 
-test('executeReviewWithFallback keeps Vertex primary and falls back to DeepSeek on failure', async () => {
+test('executeReviewWithFallback calls DeepSeek and ignores Gemini credentials', async () => {
   const messages = buildReviewMessages({
     pr: { number: 9, title: 'refactor: split', body: '' },
     diffText: '+a',
@@ -233,6 +233,7 @@ test('executeReviewWithFallback keeps Vertex primary and falls back to DeepSeek 
   const baseEnv = {
     AI_REVIEW_PROVIDER: 'opencode',
     AI_REVIEW_MODEL: 'google/gemini-4-hydrogen',
+    GEMINI_API_KEY: 'gemini-unused',
     GCP_SERVICE_ACCOUNT_JSON: '{"project_id":"synthetic"}',
     DEEPSEEK_API_KEY: 'sk-ds-fallback',
   };
@@ -245,42 +246,36 @@ test('executeReviewWithFallback keeps Vertex primary and falls back to DeepSeek 
       messages,
       getGcpToken: async () => ({ accessToken: 'gcp-tok', projectId: 'synthetic-proj' }),
     },
-    async (url) => {
-      calls.push(url);
+    async (url, opts) => {
+      calls.push({ url, model: JSON.parse(opts.body).model });
       return {
         ok: true,
-        json: async () => ({ choices: [{ message: { content: '{"summary":"Vertex OK","unresolved_findings":false,"findings":[]}' } }] }),
+        json: async () => ({ choices: [{ message: { content: '{"summary":"DeepSeek OK","unresolved_findings":false,"findings":[]}' } }] }),
       };
     }
   );
   assert.equal(calls.length, 1);
-  assert.match(calls[0], /aiplatform\.googleapis\.com/);
-  assert.equal(primaryOk.provider, 'opencode');
-  assert.equal(primaryOk.model, 'google/gemini-4-hydrogen');
+  assert.equal(calls[0].url, 'https://api.deepseek.com/chat/completions');
+  assert.equal(calls[0].model, 'deepseek-chat');
+  assert.equal(primaryOk.provider, 'deepseek');
+  assert.equal(primaryOk.model, 'deepseek-chat');
 
-  const fallbackCalls = [];
   const fallbackOk = await executeReviewWithFallback(
     {
       env: baseEnv,
       project: 'Org/Repo',
       pr: { number: 9, title: 'refactor: split' },
       messages,
-      getGcpToken: async () => ({ accessToken: 'gcp-tok', projectId: 'synthetic-proj' }),
     },
     async (url, opts) => {
-      fallbackCalls.push({ url, model: JSON.parse(opts.body).model });
-      if (url.includes('aiplatform.googleapis.com')) {
-        return { ok: false, status: 429, text: async () => 'quota exhausted' };
-      }
+      assert.equal(url, 'https://api.deepseek.com/chat/completions');
+      assert.equal(JSON.parse(opts.body).model, 'deepseek-chat');
       return {
         ok: true,
-        json: async () => ({ choices: [{ message: { content: '{"summary":"DeepSeek OK","unresolved_findings":true,"findings":[{"severity":"medium","file":"a.py","message":"bug"}]}' } }] }),
+        json: async () => ({ choices: [{ message: { content: '{"summary":"DeepSeek findings","unresolved_findings":true,"findings":[{"severity":"medium","file":"a.py","message":"bug"}]}' } }] }),
       };
     }
   );
-  assert.equal(fallbackCalls.length, 2);
-  assert.equal(fallbackCalls[1].url, 'https://api.deepseek.com/chat/completions');
-  assert.equal(fallbackCalls[1].model, 'deepseek-chat');
   assert.equal(fallbackOk.provider, 'deepseek');
   assert.equal(fallbackOk.model, 'deepseek-chat');
 

@@ -3,9 +3,8 @@ main = "worker.mjs"
 compatibility_date = "2026-01-01"
 
 [vars]
-AI_REVIEW_PROVIDER = "opencode"
-AI_REVIEW_MODEL = "google/gemini-4-hydrogen"
-GCP_VERTEX_LOCATION = "global"
+AI_REVIEW_PROVIDER = "deepseek"
+AI_REVIEW_MODEL = "deepseek-chat"
 CODEX_PROBE_MINUTES = "2"
 FALLBACK_WAIT_MINUTES = "12"
 REVIEW_MENTION_HANDLE = "@gdei-ai-reviewer review"

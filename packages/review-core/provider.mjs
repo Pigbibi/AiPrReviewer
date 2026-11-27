@@ -141,8 +141,8 @@ export function mergeBatchVerdicts(batchResults) {
   if (!batchResults.length) {
     return {
       verdict: { summary: 'No reviewable changes.', unresolved_findings: false, findings: [] },
-      provider: 'opencode',
-      model: 'google/gemini-4-hydrogen',
+      provider: 'deepseek',
+      model: 'deepseek-chat',
     };
   }
   if (batchResults.length === 1) {
@@ -177,79 +177,19 @@ export function mergeBatchVerdicts(batchResults) {
   };
 }
 
-export async function executeReviewWithFallback(
-  { env, project, pr, messages, getGcpToken },
-  fetchImpl = fetch
-) {
-  const attempts = [];
-
-  if (env.AI_SERVICE_URL) {
-    attempts.push({
-      provider: env.AI_REVIEW_PROVIDER || 'opencode',
-      model: env.AI_REVIEW_MODEL || 'google/gemini-4-hydrogen',
-      run: () => runAiServiceReview(
-        { serviceUrl: env.AI_SERVICE_URL, serviceToken: env.AI_SERVICE_TOKEN, project, pr, messages },
-        fetchImpl
-      ),
-    });
+export async function executeReviewWithFallback({ env, messages }, fetchImpl = fetch) {
+  if (!env.DEEPSEEK_API_KEY) {
+    throw new Error('No DeepSeek review credentials configured');
   }
-
-  if (env.GCP_SERVICE_ACCOUNT_JSON && typeof getGcpToken === 'function') {
-    attempts.push({
-      provider: env.AI_REVIEW_PROVIDER || 'opencode',
-      model: env.AI_REVIEW_MODEL || 'google/gemini-4-hydrogen',
-      run: async () => {
-        const gcp = await getGcpToken(env.GCP_SERVICE_ACCOUNT_JSON);
-        const loc = env.GCP_VERTEX_LOCATION || 'global';
-        const baseUrl = env.AI_REVIEW_BASE_URL
-          || `https://aiplatform.googleapis.com/v1/projects/${gcp.projectId}/locations/${loc}/endpoints/openapi/chat/completions`;
-        return runDeepSeekReview(
-          { apiKey: gcp.accessToken, baseUrl, model: env.AI_REVIEW_MODEL || 'gemini-4-hydrogen', messages },
-          fetchImpl
-        );
-      },
-    });
-  } else if (env.AI_API_KEY || env.GEMINI_API_KEY) {
-    const model = env.AI_REVIEW_MODEL || 'gemini-4-hydrogen';
-    attempts.push({
-      provider: env.AI_REVIEW_PROVIDER || 'opencode',
+  const model = env.DEEPSEEK_MODEL || 'deepseek-chat';
+  const verdict = await runDeepSeekReview(
+    {
+      apiKey: env.DEEPSEEK_API_KEY,
+      baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions',
       model,
-      run: () => runDeepSeekReview(
-        { apiKey: env.AI_API_KEY || env.GEMINI_API_KEY, baseUrl: env.AI_REVIEW_BASE_URL, model, messages },
-        fetchImpl
-      ),
-    });
-  }
-
-  if (env.DEEPSEEK_API_KEY) {
-    const dsModel = env.DEEPSEEK_MODEL || 'deepseek-chat';
-    attempts.push({
-      provider: 'deepseek',
-      model: dsModel,
-      run: () => runDeepSeekReview(
-        {
-          apiKey: env.DEEPSEEK_API_KEY,
-          baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions',
-          model: dsModel,
-          messages,
-        },
-        fetchImpl
-      ),
-    });
-  }
-
-  if (!attempts.length) {
-    throw new Error('No AI review provider credentials configured');
-  }
-
-  let lastError;
-  for (const attempt of attempts) {
-    try {
-      const verdict = await attempt.run();
-      return { verdict, provider: attempt.provider, model: attempt.model };
-    } catch (err) {
-      lastError = err;
-    }
-  }
-  throw lastError;
+      messages,
+    },
+    fetchImpl
+  );
+  return { verdict, provider: 'deepseek', model };
 }
