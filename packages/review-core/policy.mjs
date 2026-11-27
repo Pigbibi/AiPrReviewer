@@ -98,6 +98,7 @@ export function detectQuotaProviders(comments = [], { maxAgeMs = 30 * 60 * 1000,
     const provider = trustedSubscriptionProvider(c?.user);
     if (!provider) continue;
     const body = typeof c?.body === 'string' ? c.body : '';
+    if (RECEIPT_MARKERS.some(m => body.includes(m))) continue;
     if (!QUOTA_PATTERN.test(body)) continue;
     const ts = Date.parse(c?.created_at || '');
     if (Number.isFinite(ts) && Number.isFinite(maxAgeMs) && now - ts > maxAgeMs) continue;
