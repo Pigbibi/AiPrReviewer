@@ -16,10 +16,11 @@ Cloudflare Builds defines these non-secret guard inputs with account-specific va
 
 - `CLOUDFLARE_ACCOUNT_ID=<PIGBIBI_CLOUDFLARE_ACCOUNT_ID>`
 - `EXPECTED_CLOUDFLARE_ACCOUNT_ID_PIGBIBI=<PIGBIBI_CLOUDFLARE_ACCOUNT_ID>`
+- `GITHUB_APP_ID=<PIGBIBI_REVIEWER_GITHUB_APP_ID>`
 
 ## Configuration ownership
 
-- Runtime variables and bindings are repository-managed in `wrangler.pigbibi.toml`.
+- Runtime variables and bindings are repository-managed in `wrangler.pigbibi.toml`, except identifiers that repository policy requires Cloudflare to manage.
 - Secret values and real account or installation identifiers are Cloudflare-managed and must never be committed.
-- Dashboard-only runtime variables are not authoritative and may be removed by deployment; add or change variables through the Wrangler configuration.
-- The deploy guard is the authoritative pre-deployment validation for account targeting and required secret presence.
+- The guarded deploy preserves dashboard-managed runtime variables such as `GITHUB_APP_ID` while applying repository-managed variables and bindings.
+- The deploy guard is the authoritative pre-deployment validation for account targeting, required variables, and required secret presence.
