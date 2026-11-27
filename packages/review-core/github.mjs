@@ -20,6 +20,18 @@ async function ghFetch(path, token, options = {}, fetchImpl = fetch) {
   return res.json();
 }
 
+async function ghFetchAllPages(path, token, { maxPages = 30 } = {}, fetchImpl = fetch) {
+  const items = [];
+  const separator = path.includes('?') ? '&' : '?';
+  for (let page = 1; page <= maxPages; page++) {
+    const batch = await ghFetch(`${path}${separator}per_page=100&page=${page}`, token, {}, fetchImpl);
+    if (!Array.isArray(batch)) throw new Error(`GitHub API ${path} returned a non-array page`);
+    items.push(...batch);
+    if (batch.length < 100) return items;
+  }
+  throw new Error(`GitHub API ${path} exceeded the safe pagination limit`);
+}
+
 export async function getInstallationToken(appJwt, installationId, fetchImpl = fetch) {
   const data = await ghFetch(
     `/app/installations/${installationId}/access_tokens`,
@@ -57,8 +69,16 @@ export async function fetchRepoFile(owner, repo, filePath, ref, token, fetchImpl
 
 export async function fetchPrContext(owner, repo, prNumber, token, fetchImpl = fetch, relatedPaths = []) {
   const pr = await ghFetch(`/repos/${owner}/${repo}/pulls/${prNumber}`, token, {}, fetchImpl);
-  const files = await ghFetch(`/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`, token, {}, fetchImpl);
-  const comments = await ghFetch(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`, token, {}, fetchImpl);
+  const files = await ghFetchAllPages(`/repos/${owner}/${repo}/pulls/${prNumber}/files`, token, {}, fetchImpl);
+  if (!Number.isSafeInteger(pr.changed_files) || files.length !== pr.changed_files) {
+    throw new Error(`Incomplete pull request file list: expected ${pr.changed_files}, got ${files.length}`);
+  }
+  const comments = await ghFetchAllPages(
+    `/repos/${owner}/${repo}/issues/${prNumber}/comments`,
+    token,
+    { maxPages: 20 },
+    fetchImpl
+  );
   const agentsMd = await fetchRepoFile(owner, repo, 'AGENTS.md', pr.base.ref, token, fetchImpl);
   const relatedFiles = [];
   for (const relPath of relatedPaths.slice(0, 3)) {
@@ -80,3 +100,4 @@ export async function postPrComment(owner, repo, prNumber, body, token, fetchImp
     fetchImpl
   );
 }
+
