@@ -521,6 +521,11 @@ test('trusted reviewer configuration is explicit, normalized and fail-closed', (
 test('API reviewers respect quorum, provider identity and secondary-only role', () => {
   assert.equal(requiredProviderCountForReview({ allFiles: ['src/view.js'] }), 1);
   assert.equal(requiredProviderCountForReview({ allFiles: ['.github/workflows/release.yml'] }), 2);
+  assert.equal(requiredProviderCountForReview({ allFiles: ['.github/actions/review/action.yml'] }), 2);
+  assert.equal(requiredProviderCountForReview({ allFiles: ['packages/review-core/policy.mjs'] }), 2);
+  assert.equal(requiredProviderCountForReview({ allFiles: ['packages/review-core/route.mjs'] }), 2);
+  assert.equal(requiredProviderCountForReview({ allFiles: ['adapters/cloudflare-workflow/worker.mjs'] }), 2);
+  assert.equal(requiredProviderCountForReview({ allFiles: ['adapters/local-cli/review-pr.mjs'] }), 2);
   assert.equal(requiredProviderCountForReview({ allFiles: ['src/auth/token.py'] }), 2);
   assert.equal(requiredProviderCountForReview({ allFiles: reviewPathsFromFiles([{
     filename: 'src/handler.py',
