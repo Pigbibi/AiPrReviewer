@@ -4,7 +4,9 @@ compatibility_date = "2026-01-01"
 
 [vars]
 AI_REVIEW_PROVIDER = "deepseek"
-AI_REVIEW_MODEL = "deepseek-chat"
+AI_REVIEW_PROVIDER_ROLE = "primary"
+DEEPSEEK_MODEL = "deepseek-flash"
+REVIEWER_LOGIN = "gdei-ai-reviewer[bot]"
 CODEX_PROBE_MINUTES = "2"
 FALLBACK_WAIT_MINUTES = "12"
 REVIEW_MENTION_HANDLE = "@gdei-ai-reviewer review"
@@ -17,3 +19,4 @@ id = "1ec69db20d9347cda77ada2c5adb1585"
 name = "gdei-pr-review-workflow"
 binding = "PR_REVIEW_WORKFLOW"
 class_name = "PrReviewWorkflow"
+
