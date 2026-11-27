@@ -3,7 +3,8 @@
 const HIGH_RISK_SECURITY_PATH_RE =
   /^(?:\.github\/workflows\/|deploy\/|ops\/|.*wrangler.*\.toml$|.*(?:auth|oauth|login|session|jwt|token|secret|key|crypto|webhook|signature|permission|rbac|iam|payment|charge|order|trade|execution|risk|sql|migration|security).*)/i;
 const DOC_ONLY_PATH_RE = /\.(?:md|txt|rst)$/i;
-const BLOCKING_SEVERITIES = new Set(['critical', 'high', 'medium']);
+const MACHINE_TEXT_FILE_RE =
+  /(?:^|\/)(?:requirements[^/]*\.txt|constraints[^/]*\.txt|cmakelists\.txt|robots\.txt|humans\.txt)$/i;
 
 function collectChangedPaths({ allFiles = [], diffText = '' } = {}) {
   const candidates = new Set(
@@ -27,7 +28,7 @@ export function detectHighRiskSecurityPaths({ allFiles = [], diffText = '' } = {
 
 export function isDocOnlyChange({ allFiles = [], diffText = '' } = {}) {
   const paths = collectChangedPaths({ allFiles, diffText });
-  return paths.length > 0 && paths.every(filePath => DOC_ONLY_PATH_RE.test(filePath));
+  return paths.length > 0 && paths.every(filePath => DOC_ONLY_PATH_RE.test(filePath) && !MACHINE_TEXT_FILE_RE.test(filePath));
 }
 
 export function buildReviewMessages({
@@ -98,9 +99,11 @@ export function parseVerdict(rawText) {
   const parsed = JSON.parse(cleaned);
   if (!parsed || typeof parsed !== 'object') throw new Error('Review output must be a JSON object');
   const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
-  const hasBlockingFinding = findings.some(f =>
-    BLOCKING_SEVERITIES.has(String(f?.severity || '').trim().toLowerCase())
-  );
+  // Match receipt.mjs: omitted/empty severities default to 'medium' and stay blocking.
+  const hasBlockingFinding = findings.some(f => {
+    const sev = String(f?.severity ?? '').trim().toLowerCase() || 'medium';
+    return sev !== 'low';
+  });
   return {
     summary: typeof parsed.summary === 'string' && parsed.summary.trim()
       ? parsed.summary.trim()

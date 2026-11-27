@@ -387,6 +387,9 @@ test('adaptive circuit breaker routes automatically without manual switches', ()
 test('isDocOnlyChange calibrates doc-only prompts and parseVerdict suppresses low-only blocking', () => {
   assert.equal(isDocOnlyChange({ allFiles: ['docs/pilot-results.md', 'README.txt'] }), true);
   assert.equal(isDocOnlyChange({ allFiles: ['docs/pilot-results.md', 'src/app.py'] }), false);
+  assert.equal(isDocOnlyChange({ allFiles: ['requirements.txt'] }), false);
+  assert.equal(isDocOnlyChange({ allFiles: ['sub/requirements-dev.txt'] }), false);
+  assert.equal(isDocOnlyChange({ allFiles: ['CMakeLists.txt'] }), false);
   assert.equal(isDocOnlyChange({ diffText: 'diff --git a/docs/a.md b/docs/a.md\n+text' }), true);
 
   const docMsgs = buildReviewMessages({
@@ -407,6 +410,15 @@ test('isDocOnlyChange calibrates doc-only prompts and parseVerdict suppresses lo
   });
   assert.doesNotMatch(codeMsgs.user, /Documentation-Only Review Calibration/);
 
+  const reqMsgs = buildReviewMessages({
+    pr: { number: 1240, title: 'build: pin deps', body: '' },
+    diffText: 'diff --git a/requirements.txt b/requirements.txt\n+pytest==8.0.0',
+    truncated: false,
+    agentsMd: '',
+    allFiles: ['requirements.txt'],
+  });
+  assert.doesNotMatch(reqMsgs.user, /Documentation-Only Review Calibration/);
+
   const lowOnly = parseVerdict(JSON.stringify({
     summary: 'Minor rounding nit',
     unresolved_findings: true,
@@ -414,6 +426,13 @@ test('isDocOnlyChange calibrates doc-only prompts and parseVerdict suppresses lo
   }));
   assert.equal(lowOnly.unresolved_findings, false);
   assert.equal(lowOnly.findings.length, 1);
+
+  const missingSeverity = parseVerdict(JSON.stringify({
+    summary: 'Missing severity defaults to medium',
+    unresolved_findings: true,
+    findings: [{ file: 'src/a.py', message: 'bug without severity field' }],
+  }));
+  assert.equal(missingSeverity.unresolved_findings, true);
 
   const medium = parseVerdict(JSON.stringify({
     summary: 'Leak',
