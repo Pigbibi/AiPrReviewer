@@ -80,11 +80,11 @@ export function updateCircuitState(
   for (const p of inactiveProviders) {
     next[p] = { status: 'inactive', updatedAt: now, cooldownUntil: now + INACTIVE_COOLDOWN_MS };
   }
-  for (const p of quotaProviders) {
-    next[p] = { status: 'quota_exhausted', updatedAt: now, cooldownUntil: now + QUOTA_COOLDOWN_MS };
-  }
   for (const p of activeProviders) {
     next[p] = { status: 'active', updatedAt: now, cooldownUntil: 0 };
+  }
+  for (const p of quotaProviders) {
+    next[p] = { status: 'quota_exhausted', updatedAt: now, cooldownUntil: now + QUOTA_COOLDOWN_MS };
   }
   return next;
 }
