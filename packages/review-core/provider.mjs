@@ -2,8 +2,10 @@
 
 const HIGH_RISK_SECURITY_PATH_RE =
   /^(?:\.github\/workflows\/|deploy\/|ops\/|.*wrangler.*\.toml$|.*(?:auth|oauth|login|session|jwt|token|secret|key|crypto|webhook|signature|permission|rbac|iam|payment|charge|order|trade|execution|risk|sql|migration|security).*)/i;
+const DOC_ONLY_PATH_RE = /\.(?:md|txt|rst)$/i;
+const BLOCKING_SEVERITIES = new Set(['critical', 'high', 'medium']);
 
-export function detectHighRiskSecurityPaths({ allFiles = [], diffText = '' } = {}) {
+function collectChangedPaths({ allFiles = [], diffText = '' } = {}) {
   const candidates = new Set(
     (Array.isArray(allFiles) ? allFiles : []).map(f => String(f || '').trim()).filter(Boolean)
   );
@@ -12,10 +14,20 @@ export function detectHighRiskSecurityPaths({ allFiles = [], diffText = '' } = {
       const m = /^diff --git a\/.+ b\/(.+)$/.exec(line);
       if (m) candidates.add(m[1].trim());
     } else if (line.startsWith('+++ b/')) {
-      candidates.add(line.slice(6).trim());
+      const target = line.slice(6).trim();
+      if (target && target !== '/dev/null') candidates.add(target);
     }
   }
-  return [...candidates].filter(filePath => HIGH_RISK_SECURITY_PATH_RE.test(filePath));
+  return [...candidates];
+}
+
+export function detectHighRiskSecurityPaths({ allFiles = [], diffText = '' } = {}) {
+  return collectChangedPaths({ allFiles, diffText }).filter(filePath => HIGH_RISK_SECURITY_PATH_RE.test(filePath));
+}
+
+export function isDocOnlyChange({ allFiles = [], diffText = '' } = {}) {
+  const paths = collectChangedPaths({ allFiles, diffText });
+  return paths.length > 0 && paths.every(filePath => DOC_ONLY_PATH_RE.test(filePath));
 }
 
 export function buildReviewMessages({
@@ -29,6 +41,7 @@ export function buildReviewMessages({
   allFiles = [],
 }) {
   const highRiskPaths = detectHighRiskSecurityPaths({ allFiles, diffText });
+  const docOnly = isDocOnlyChange({ allFiles, diffText });
   const system = [
     'You are a strict senior code reviewer.',
     'Check the PR diff and related referenced files for correctness bugs, security leaks, architecture boundary violations, silent error swallowing, missing tests, and duplicated/over-complex AI-slop code.',
@@ -44,6 +57,14 @@ export function buildReviewMessages({
         '3. External inputs: check for command injection, SQL/path traversal, SSRF, or unvalidated redirects.',
         '4. CI/deploy configs: verify GitHub Actions permissions stay minimal and third-party actions remain SHA-pinned.',
         '5. Trading/execution paths: verify risk gates, idempotency, and fail-closed safety invariants are preserved.',
+      ].join('\n')
+    : '';
+
+  const docsCalibrationSection = docOnly
+    ? [
+        '## Documentation-Only Review Calibration',
+        '1. Emit severity "high" or "medium" (with unresolved_findings=true) ONLY for real credential/secret/PII leaks, broken or contradictory safety/policy rules, or wrong/dangerous operational commands.',
+        '2. Do NOT classify summary-table display rounding differences (e.g., 2-decimal rounded figures vs unrounded run numbers), prose/footnote wording style nits, or external context outside this diff as "high" or "medium" — report those as "low" with unresolved_findings=false, or omit them.',
       ].join('\n')
     : '';
 
@@ -64,6 +85,7 @@ export function buildReviewMessages({
     pr.body ? `### Description\n${pr.body.slice(0, 2000)}\n` : '',
     batchHeader,
     securityChecklistSection,
+    docsCalibrationSection,
     relatedSection,
     `## Diff${truncated ? ' (truncated)' : ''}${diffText}`,
   ].filter(Boolean).join('\n');
@@ -75,12 +97,18 @@ export function parseVerdict(rawText) {
   const cleaned = String(rawText || '').trim().replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
   const parsed = JSON.parse(cleaned);
   if (!parsed || typeof parsed !== 'object') throw new Error('Review output must be a JSON object');
+  const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
+  const hasBlockingFinding = findings.some(f =>
+    BLOCKING_SEVERITIES.has(String(f?.severity || '').trim().toLowerCase())
+  );
   return {
     summary: typeof parsed.summary === 'string' && parsed.summary.trim()
       ? parsed.summary.trim()
       : 'Automated review completed.',
-    unresolved_findings: Boolean(parsed.unresolved_findings),
-    findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+    unresolved_findings: findings.length > 0
+      ? Boolean(parsed.unresolved_findings) && hasBlockingFinding
+      : Boolean(parsed.unresolved_findings),
+    findings,
   };
 }
 
