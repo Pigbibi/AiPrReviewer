@@ -82,6 +82,34 @@ export function isCodexQuotaComment(body, userLogin = '') {
   return /codex/i.test(userLogin) && typeof body === 'string' && QUOTA_PATTERN.test(body);
 }
 
+export function detectQuotaProviders(comments = []) {
+  const providers = new Set();
+  for (const c of comments) {
+    const login = String(c?.user?.login || '');
+    const body = typeof c?.body === 'string' ? c.body : '';
+    if (!QUOTA_PATTERN.test(body)) continue;
+    if (/codex/i.test(login)) providers.add('codex');
+    if (/claude/i.test(login)) providers.add('claude');
+  }
+  return [...providers];
+}
+
+export function detectActiveSubscriptionProviders(comments = [], headSha = '') {
+  const providers = new Set();
+  for (const c of comments) {
+    const login = String(c?.user?.login || '');
+    const body = typeof c?.body === 'string' ? c.body : '';
+    if (!headSha || !body.includes(headSha)) continue;
+    if (/codex/i.test(login) && (body.includes('codex-review-state:v1') || body.includes('ai-review-receipt:v1'))) {
+      providers.add('codex');
+    }
+    if (/claude/i.test(login) && body.includes('ai-review-receipt:v1')) {
+      providers.add('claude');
+    }
+  }
+  return [...providers];
+}
+
 export function isLowRiskRoutinePr({ headRef = '', title = '', files = [] } = {}) {
   if (ROUTINE_BRANCH_RE.test(headRef)) return true;
   if (/^chore\(governance\):\s*bump/i.test(title)) return true;

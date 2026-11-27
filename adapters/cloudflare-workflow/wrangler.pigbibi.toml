@@ -9,6 +9,10 @@ CODEX_PROBE_MINUTES = "2"
 FALLBACK_WAIT_MINUTES = "12"
 REVIEW_MENTION_HANDLE = "@pigbibi-ai-reviewer review"
 
+[[kv_namespaces]]
+binding = "ROUTE_STATE_KV"
+id = "ce6ef4bb7e8447d1b6b6f82dae8875a6"
+
 [[workflows]]
 name = "pigbibi-pr-review-workflow"
 binding = "PR_REVIEW_WORKFLOW"
