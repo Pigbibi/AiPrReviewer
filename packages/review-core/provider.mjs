@@ -1,7 +1,7 @@
 // Provider adapter for OpenAI-compatible Chat Completions API and AIService bridge.
 
 const HIGH_RISK_SECURITY_PATH_RE =
-  /^(?:\.github\/workflows\/|deploy\/|ops\/|.*wrangler.*\.toml$|.*(?:auth|oauth|login|session|jwt|token|secret|key|crypto|webhook|signature|permission|rbac|iam|payment|charge|order|trade|execution|risk|sql|migration|security).*)/i;
+  /^(?:\.github\/(?:workflows|actions)\/|(?:.*\/)?action\.ya?ml$|packages\/review-core\/|adapters\/(?:cloudflare-workflow|local-cli)\/|deploy\/|ops\/|.*wrangler.*\.toml$|.*(?:auth|oauth|login|session|jwt|token|secret|key|crypto|webhook|signature|permission|rbac|iam|payment|charge|order|trade|execution|risk|sql|migration|security).*)/i;
 const DOC_ONLY_PATH_RE = /\.(?:md|txt|rst)$/i;
 const MACHINE_TEXT_FILE_RE =
   /(?:^|\/)(?:requirements[^/]*\.txt|constraints[^/]*\.txt|cmakelists\.txt|robots\.txt|humans\.txt)$/i;
