@@ -16,6 +16,7 @@ import {
   planPullRequestWebhook,
 } from '../packages/review-core/policy.mjs';
 import {
+  isDocOnlyChange,
   parseVerdict,
   runDeepSeekReview,
   runAiServiceReview,
@@ -381,4 +382,62 @@ test('adaptive circuit breaker routes automatically without manual switches', ()
     []
   );
   assert.deepEqual(detectQuotaProviders(comments), ['codex']);
+});
+
+test('isDocOnlyChange calibrates doc-only prompts and parseVerdict suppresses low-only blocking', () => {
+  assert.equal(isDocOnlyChange({ allFiles: ['docs/pilot-results.md', 'README.txt'] }), true);
+  assert.equal(isDocOnlyChange({ allFiles: ['docs/pilot-results.md', 'src/app.py'] }), false);
+  assert.equal(isDocOnlyChange({ allFiles: ['requirements.txt'] }), false);
+  assert.equal(isDocOnlyChange({ allFiles: ['sub/requirements-dev.txt'] }), false);
+  assert.equal(isDocOnlyChange({ allFiles: ['CMakeLists.txt'] }), false);
+  assert.equal(isDocOnlyChange({ diffText: 'diff --git a/docs/a.md b/docs/a.md\n+text' }), true);
+
+  const docMsgs = buildReviewMessages({
+    pr: { number: 1238, title: 'docs(quant): publish PILOT results', body: '' },
+    diffText: 'diff --git a/docs/quant/pilot-results.md b/docs/quant/pilot-results.md\n+| 92.0% |',
+    truncated: false,
+    agentsMd: '',
+    allFiles: ['docs/quant/pilot-results.md'],
+  });
+  assert.match(docMsgs.user, /Documentation-Only Review Calibration/);
+
+  const codeMsgs = buildReviewMessages({
+    pr: { number: 1239, title: 'feat: code', body: '' },
+    diffText: 'diff --git a/src/app.py b/src/app.py\n+x = 1',
+    truncated: false,
+    agentsMd: '',
+    allFiles: ['src/app.py', 'docs/a.md'],
+  });
+  assert.doesNotMatch(codeMsgs.user, /Documentation-Only Review Calibration/);
+
+  const reqMsgs = buildReviewMessages({
+    pr: { number: 1240, title: 'build: pin deps', body: '' },
+    diffText: 'diff --git a/requirements.txt b/requirements.txt\n+pytest==8.0.0',
+    truncated: false,
+    agentsMd: '',
+    allFiles: ['requirements.txt'],
+  });
+  assert.doesNotMatch(reqMsgs.user, /Documentation-Only Review Calibration/);
+
+  const lowOnly = parseVerdict(JSON.stringify({
+    summary: 'Minor rounding nit',
+    unresolved_findings: true,
+    findings: [{ severity: 'low', file: 'docs/a.md', message: '2dp rounding note' }],
+  }));
+  assert.equal(lowOnly.unresolved_findings, false);
+  assert.equal(lowOnly.findings.length, 1);
+
+  const missingSeverity = parseVerdict(JSON.stringify({
+    summary: 'Missing severity defaults to medium',
+    unresolved_findings: true,
+    findings: [{ file: 'src/a.py', message: 'bug without severity field' }],
+  }));
+  assert.equal(missingSeverity.unresolved_findings, true);
+
+  const medium = parseVerdict(JSON.stringify({
+    summary: 'Leak',
+    unresolved_findings: true,
+    findings: [{ severity: 'medium', file: 'docs/a.md', message: 'secret leak' }],
+  }));
+  assert.equal(medium.unresolved_findings, true);
 });
