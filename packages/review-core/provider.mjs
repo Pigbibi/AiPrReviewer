@@ -149,10 +149,13 @@ export async function runGeminiReview({ apiKey, baseUrl, model, messages }, fetc
   if (!apiKey) throw new Error('Missing GEMINI_API_KEY');
   const modelName = model || 'gemini-3.8-flash';
   const base = String(baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
-  const endpoint = `${base}/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const endpoint = `${base}/models/${encodeURIComponent(modelName)}:generateContent`;
   const res = await fetchImpl(endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: messages.system }] },
       contents: [{ role: 'user', parts: [{ text: messages.user }] }],
