@@ -5,6 +5,8 @@ import {
   hasReceiptForHead,
   isCodexRunningForHead,
   isCodexQuotaComment,
+  detectQuotaProviders,
+  detectActiveSubscriptionProviders,
   isLowRiskRoutinePr,
   extractReferencedPaths,
   buildReviewDiff,
@@ -22,6 +24,11 @@ import {
   mergeBatchVerdicts,
 } from '../packages/review-core/provider.mjs';
 import { formatReceiptComment } from '../packages/review-core/receipt.mjs';
+import {
+  flagsFromEnv,
+  selectAdaptiveRoute,
+  updateCircuitState,
+} from '../packages/review-core/route.mjs';
 
 test('verifyWebhookSignature validates real HMAC-SHA256 and rejects tampered payloads', async () => {
   const secret = 'synthetic-webhook-secret';
@@ -332,4 +339,46 @@ test('shouldSkipPrState and planPullRequestWebhook support mention-triggered dra
   });
   assert.equal(codexQuota.action, 'fetch_and_dispatch');
   assert.equal(codexQuota.allowDraft, false);
+});
+
+test('adaptive circuit breaker routes automatically without manual switches', () => {
+  const now = 1_700_000_000_000;
+  const autoFlags = flagsFromEnv({});
+  assert.equal(autoFlags.codexMode, 'auto');
+  assert.equal(autoFlags.claudeMode, 'auto');
+
+  const initial = selectAdaptiveRoute({ ...autoFlags, circuitState: {}, now });
+  assert.equal(initial.kind, 'subscription');
+  assert.deepEqual(initial.providers, ['codex', 'claude']);
+  assert.deepEqual(initial.autoProbed, ['codex', 'claude']);
+
+  const cooled = updateCircuitState({}, { inactiveProviders: ['codex', 'claude'], now });
+  const fastDeepSeek = selectAdaptiveRoute({ ...autoFlags, circuitState: cooled, now: now + 60_000 });
+  assert.equal(fastDeepSeek.kind, 'deepseek');
+  assert.deepEqual(fastDeepSeek.providers, ['deepseek']);
+
+  const afterCooldown = selectAdaptiveRoute({
+    ...autoFlags,
+    circuitState: cooled,
+    now: now + 7 * 60 * 60 * 1000,
+  });
+  assert.equal(afterCooldown.kind, 'subscription');
+
+  const reactivated = updateCircuitState(cooled, { activeProviders: ['claude'], now });
+  const claudeOnly = selectAdaptiveRoute({ ...autoFlags, circuitState: reactivated, now: now + 60_000 });
+  assert.equal(claudeOnly.kind, 'subscription');
+  assert.deepEqual(claudeOnly.providers, ['claude']);
+
+  const head = 'a'.repeat(40);
+  const comments = [
+    { user: { login: 'claude[bot]' }, updated_at: '2026-11-27T01:00:00Z', body: `<!-- ai-review-receipt:v1 {"review":{"commit_sha":"${head}","status":"completed"}} --> rate limit` },
+    { user: { login: 'chatgpt-codex-connector[bot]' }, body: 'Usage limit reached. Try again later.' },
+    { user: { login: 'fake-claude-user' }, body: 'Usage limit reached. Try again later.' },
+  ];
+  assert.deepEqual(detectActiveSubscriptionProviders(comments, head), ['claude']);
+  assert.deepEqual(
+    detectActiveSubscriptionProviders(comments, head, { minTimestampByProvider: { claude: Date.parse('2026-11-27T02:00:00Z') } }),
+    []
+  );
+  assert.deepEqual(detectQuotaProviders(comments), ['codex']);
 });

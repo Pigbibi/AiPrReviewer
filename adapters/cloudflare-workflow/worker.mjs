@@ -8,6 +8,8 @@ import { getInstallationToken, fetchPrContext, fetchRepoFile, postPrComment } fr
 import {
   hasReceiptForHead,
   isReviewInProgressForHead,
+  detectQuotaProviders,
+  detectActiveSubscriptionProviders,
   extractReferencedPaths,
   buildReviewBatches,
   shouldSkipPrState,
@@ -18,8 +20,39 @@ import {
   executeReviewWithFallback,
   mergeBatchVerdicts,
 } from '../../packages/review-core/provider.mjs';
-import { flagsFromEnv, selectReviewRoute } from '../../packages/review-core/route.mjs';
+import { flagsFromEnv, selectAdaptiveRoute, updateCircuitState } from '../../packages/review-core/route.mjs';
 import { formatReceiptComment } from '../../packages/review-core/receipt.mjs';
+
+async function loadCircuitState(env, owner) {
+  if (!env?.ROUTE_STATE_KV) return {};
+  try {
+    const [codex, claude] = await Promise.all([
+      env.ROUTE_STATE_KV.get(`route:v1:${owner}:codex`, 'json'),
+      env.ROUTE_STATE_KV.get(`route:v1:${owner}:claude`, 'json'),
+    ]);
+    return {
+      ...(codex ? { codex } : {}),
+      ...(claude ? { claude } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function saveProviderStates(env, owner, updates) {
+  if (!env?.ROUTE_STATE_KV) return;
+  try {
+    await Promise.all(
+      Object.entries(updates).map(([provider, entry]) =>
+        env.ROUTE_STATE_KV.put(`route:v1:${owner}:${provider}`, JSON.stringify(entry), {
+          expirationTtl: 7 * 24 * 60 * 60,
+        })
+      )
+    );
+  } catch {
+    // Non-fatal: KV write failure must not block PR review.
+  }
+}
 
 export class PrReviewWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
@@ -34,7 +67,13 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
     } = event.payload;
     const waitMinutes = Number(this.env.FALLBACK_WAIT_MINUTES ?? '12');
     const probeMinutes = Math.min(waitMinutes, Number(this.env.CODEX_PROBE_MINUTES ?? '2'));
-    const route = selectReviewRoute(flagsFromEnv(this.env));
+    const flags = flagsFromEnv(this.env);
+    const circuitState = await step.do('load-route-state', () => loadCircuitState(this.env, owner));
+    const route = selectAdaptiveRoute({
+      codexMode: flags.codexMode,
+      claudeMode: flags.claudeMode,
+      circuitState,
+    });
 
     if (!immediate && route.kind === 'subscription' && waitMinutes > 0) {
       if (probeMinutes > 0) {
@@ -47,12 +86,40 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
         const ctx = await fetchPrContext(owner, repo, prNumber, token);
         if (shouldSkipPrState(ctx.pr, { allowDraft })) return { proceed: false, reason: 'closed_or_draft' };
         if (ctx.pr.head.sha !== headSha) return { proceed: false, reason: 'stale_head' };
-        if (hasReceiptForHead(ctx.comments, headSha)) return { proceed: false, reason: 'already_reviewed' };
-        const codexRunning = isReviewInProgressForHead(ctx.comments, headSha);
-        return {
-          proceed: true,
-          waitRemainingMinutes: codexRunning ? Math.max(0, waitMinutes - probeMinutes) : 0,
-        };
+
+        const now = Date.now();
+        const minTimestampByProvider = Object.fromEntries(
+          Object.entries(circuitState).map(([p, entry]) => [p, entry?.updatedAt || 0])
+        );
+        const activeProviders = detectActiveSubscriptionProviders(ctx.comments, headSha, { minTimestampByProvider });
+        if (hasReceiptForHead(ctx.comments, headSha)) {
+          if (activeProviders.length) {
+            await saveProviderStates(this.env, owner, updateCircuitState({}, { activeProviders, now }));
+          }
+          return { proceed: false, reason: 'already_reviewed' };
+        }
+
+        const quotaProviders = detectQuotaProviders(ctx.comments, { now })
+          .filter(p => route.providers.includes(p));
+        const running = isReviewInProgressForHead(ctx.comments, headSha);
+
+        if (running) {
+          const updates = updateCircuitState({}, { activeProviders, quotaProviders, now });
+          if (Object.keys(updates).length) {
+            await saveProviderStates(this.env, owner, updates);
+          }
+          return {
+            proceed: true,
+            waitRemainingMinutes: Math.max(0, waitMinutes - probeMinutes),
+          };
+        }
+
+        const inactiveProviders = route.autoProbed.filter(p => !quotaProviders.includes(p));
+        const updates = updateCircuitState({}, { quotaProviders, inactiveProviders, now });
+        if (Object.keys(updates).length) {
+          await saveProviderStates(this.env, owner, updates);
+        }
+        return { proceed: true, waitRemainingMinutes: 0 };
       });
 
       if (!probe.proceed) {
@@ -70,6 +137,16 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       const ctx = await fetchPrContext(owner, repo, prNumber, token);
       if (shouldSkipPrState(ctx.pr, { allowDraft })) return { skip: true, reason: 'closed_or_draft' };
       if (ctx.pr.head.sha !== headSha) return { skip: true, reason: 'stale_head' };
+      const now = Date.now();
+      const minTimestampByProvider = Object.fromEntries(
+        Object.entries(circuitState).map(([p, entry]) => [p, entry?.updatedAt || 0])
+      );
+      const activeProviders = detectActiveSubscriptionProviders(ctx.comments, headSha, { minTimestampByProvider });
+      const quotaProviders = detectQuotaProviders(ctx.comments, { now });
+      const updates = updateCircuitState({}, { activeProviders, quotaProviders, now });
+      if (Object.keys(updates).length) {
+        await saveProviderStates(this.env, owner, updates);
+      }
       if (hasReceiptForHead(ctx.comments, headSha)) return { skip: true, reason: 'already_reviewed' };
       const { batches, allReviewableFiles, truncated } = buildReviewBatches(ctx.files);
       if (!batches.length) return { skip: true, reason: 'empty_diff' };

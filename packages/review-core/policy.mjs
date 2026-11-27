@@ -82,6 +82,51 @@ export function isCodexQuotaComment(body, userLogin = '') {
   return /codex/i.test(userLogin) && typeof body === 'string' && QUOTA_PATTERN.test(body);
 }
 
+const TRUSTED_CODEX_LOGINS = new Set(['chatgpt-codex-connector[bot]', 'chatgpt-codex-connector']);
+const TRUSTED_CLAUDE_LOGINS = new Set(['claude[bot]']);
+
+function trustedSubscriptionProvider(user) {
+  const login = String(user?.login || '').trim().toLowerCase();
+  if (TRUSTED_CODEX_LOGINS.has(login)) return 'codex';
+  if (TRUSTED_CLAUDE_LOGINS.has(login)) return 'claude';
+  return null;
+}
+
+export function detectQuotaProviders(comments = [], { maxAgeMs = 30 * 60 * 1000, now = Date.now() } = {}) {
+  const providers = new Set();
+  for (const c of comments) {
+    const provider = trustedSubscriptionProvider(c?.user);
+    if (!provider) continue;
+    const body = typeof c?.body === 'string' ? c.body : '';
+    if (RECEIPT_MARKERS.some(m => body.includes(m))) continue;
+    if (!QUOTA_PATTERN.test(body)) continue;
+    const ts = Date.parse(c?.created_at || '');
+    if (Number.isFinite(ts) && Number.isFinite(maxAgeMs) && now - ts > maxAgeMs) continue;
+    providers.add(provider);
+  }
+  return [...providers];
+}
+
+export function detectActiveSubscriptionProviders(comments = [], headSha = '', { minTimestampByProvider = {} } = {}) {
+  const providers = new Set();
+  for (const c of comments) {
+    const provider = trustedSubscriptionProvider(c?.user);
+    if (!provider) continue;
+    const body = typeof c?.body === 'string' ? c.body : '';
+    if (!headSha || !body.includes(headSha)) continue;
+    const minTs = minTimestampByProvider[provider] || 0;
+    const ts = Date.parse(c?.updated_at || c?.created_at || '');
+    if (minTs > 0 && (!Number.isFinite(ts) || ts <= minTs)) continue;
+    if (provider === 'codex' && (body.includes('codex-review-state:v1') || body.includes('ai-review-receipt:v1'))) {
+      providers.add('codex');
+    }
+    if (provider === 'claude' && body.includes('ai-review-receipt:v1')) {
+      providers.add('claude');
+    }
+  }
+  return [...providers];
+}
+
 export function isLowRiskRoutinePr({ headRef = '', title = '', files = [] } = {}) {
   if (ROUTINE_BRANCH_RE.test(headRef)) return true;
   if (/^chore\(governance\):\s*bump/i.test(title)) return true;

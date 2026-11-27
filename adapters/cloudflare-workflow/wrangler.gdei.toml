@@ -9,6 +9,10 @@ CODEX_PROBE_MINUTES = "2"
 FALLBACK_WAIT_MINUTES = "12"
 REVIEW_MENTION_HANDLE = "@gdei-ai-reviewer review"
 
+[[kv_namespaces]]
+binding = "ROUTE_STATE_KV"
+id = "1ec69db20d9347cda77ada2c5adb1585"
+
 [[workflows]]
 name = "gdei-pr-review-workflow"
 binding = "PR_REVIEW_WORKFLOW"
