@@ -10,8 +10,11 @@ export const TARGET_WORKERS = Object.freeze({
 
 export const REQUIRED_BASE_SECRETS = Object.freeze([
   'GITHUB_WEBHOOK_SECRET',
-  'GITHUB_APP_ID',
   'GITHUB_APP_PRIVATE_KEY',
+]);
+
+export const REQUIRED_BASE_VARIABLES = Object.freeze([
+  'GITHUB_APP_ID',
 ]);
 
 export const PROVIDER_SECRET_CANDIDATES = Object.freeze([
@@ -55,6 +58,13 @@ export function validateDeployPreconditions({
   }
 
   if (!allowBootstrap) {
+    const missingVariables = REQUIRED_BASE_VARIABLES.filter(name => !String(env[name] || '').trim());
+    if (missingVariables.length) {
+      throw new Error(
+        `Refusing deploy of ${spec.worker} to account ${accountId}: missing required variables [${missingVariables.join(', ')}]`
+      );
+    }
+
     const present = new Set(secretNames);
     const missingBase = REQUIRED_BASE_SECRETS.filter(name => !present.has(name));
     if (missingBase.length) {
@@ -71,6 +81,10 @@ export function validateDeployPreconditions({
   }
 
   return spec;
+}
+
+export function buildDeployArgs(configPath) {
+  return ['deploy', '-c', configPath, '--keep-vars'];
 }
 
 export function runDeployCli(argv = process.argv.slice(2), env = process.env) {
@@ -111,7 +125,7 @@ export function runDeployCli(argv = process.argv.slice(2), env = process.env) {
 
   execFileSync(
     'wrangler',
-    ['deploy', '-c', configPath],
+    buildDeployArgs(configPath),
     { cwd: workflowDir, env: { ...env, CLOUDFLARE_ACCOUNT_ID: accountId }, stdio: 'inherit' }
   );
 }
@@ -120,3 +134,4 @@ const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv
 if (isMain) {
   runDeployCli();
 }
+
