@@ -26,18 +26,29 @@ import { formatReceiptComment } from '../../packages/review-core/receipt.mjs';
 async function loadCircuitState(env, owner) {
   if (!env?.ROUTE_STATE_KV) return {};
   try {
-    return (await env.ROUTE_STATE_KV.get(`route:v1:${owner}`, 'json')) || {};
+    const [codex, claude] = await Promise.all([
+      env.ROUTE_STATE_KV.get(`route:v1:${owner}:codex`, 'json'),
+      env.ROUTE_STATE_KV.get(`route:v1:${owner}:claude`, 'json'),
+    ]);
+    return {
+      ...(codex ? { codex } : {}),
+      ...(claude ? { claude } : {}),
+    };
   } catch {
     return {};
   }
 }
 
-async function saveCircuitState(env, owner, nextState) {
+async function saveProviderStates(env, owner, updates) {
   if (!env?.ROUTE_STATE_KV) return;
   try {
-    await env.ROUTE_STATE_KV.put(`route:v1:${owner}`, JSON.stringify(nextState), {
-      expirationTtl: 7 * 24 * 60 * 60,
-    });
+    await Promise.all(
+      Object.entries(updates).map(([provider, entry]) =>
+        env.ROUTE_STATE_KV.put(`route:v1:${owner}:${provider}`, JSON.stringify(entry), {
+          expirationTtl: 7 * 24 * 60 * 60,
+        })
+      )
+    );
   } catch {
     // Non-fatal: KV write failure must not block PR review.
   }
@@ -76,24 +87,23 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
         if (shouldSkipPrState(ctx.pr, { allowDraft })) return { proceed: false, reason: 'closed_or_draft' };
         if (ctx.pr.head.sha !== headSha) return { proceed: false, reason: 'stale_head' };
 
+        const now = Date.now();
         const activeProviders = detectActiveSubscriptionProviders(ctx.comments, headSha);
         if (hasReceiptForHead(ctx.comments, headSha)) {
           if (activeProviders.length) {
-            await saveCircuitState(this.env, owner, updateCircuitState(circuitState, { activeProviders }));
+            await saveProviderStates(this.env, owner, updateCircuitState({}, { activeProviders, now }));
           }
           return { proceed: false, reason: 'already_reviewed' };
         }
 
-        const quotaProviders = detectQuotaProviders(ctx.comments);
-        if (quotaProviders.length) {
-          await saveCircuitState(this.env, owner, updateCircuitState(circuitState, { quotaProviders }));
-          return { proceed: true, waitRemainingMinutes: 0 };
-        }
-
+        const quotaProviders = detectQuotaProviders(ctx.comments, { now })
+          .filter(p => route.providers.includes(p));
         const running = isReviewInProgressForHead(ctx.comments, headSha);
+
         if (running) {
-          if (activeProviders.length) {
-            await saveCircuitState(this.env, owner, updateCircuitState(circuitState, { activeProviders }));
+          const updates = updateCircuitState({}, { activeProviders, quotaProviders, now });
+          if (Object.keys(updates).length) {
+            await saveProviderStates(this.env, owner, updates);
           }
           return {
             proceed: true,
@@ -101,12 +111,10 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
           };
         }
 
-        if (route.autoProbed.length) {
-          await saveCircuitState(
-            this.env,
-            owner,
-            updateCircuitState(circuitState, { inactiveProviders: route.autoProbed })
-          );
+        const inactiveProviders = route.autoProbed.filter(p => !quotaProviders.includes(p));
+        const updates = updateCircuitState({}, { quotaProviders, inactiveProviders, now });
+        if (Object.keys(updates).length) {
+          await saveProviderStates(this.env, owner, updates);
         }
         return { proceed: true, waitRemainingMinutes: 0 };
       });

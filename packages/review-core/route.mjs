@@ -29,8 +29,8 @@ export function flagsFromEnv(env) {
   return {
     codexMode: flagMode(env.CODEX_REVIEW_ENABLED, 'auto'),
     claudeMode: flagMode(env.CLAUDE_REVIEW_ENABLED, 'auto'),
-    codexEnabled: flagMode(env.CODEX_REVIEW_ENABLED, 'auto') !== false,
-    claudeEnabled: flagMode(env.CLAUDE_REVIEW_ENABLED, 'auto') !== false,
+    codexEnabled: flagEnabled(env.CODEX_REVIEW_ENABLED, true),
+    claudeEnabled: flagEnabled(env.CLAUDE_REVIEW_ENABLED, false),
   };
 }
 

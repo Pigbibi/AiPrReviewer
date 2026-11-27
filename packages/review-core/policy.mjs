@@ -82,12 +82,14 @@ export function isCodexQuotaComment(body, userLogin = '') {
   return /codex/i.test(userLogin) && typeof body === 'string' && QUOTA_PATTERN.test(body);
 }
 
-export function detectQuotaProviders(comments = []) {
+export function detectQuotaProviders(comments = [], { maxAgeMs = 30 * 60 * 1000, now = Date.now() } = {}) {
   const providers = new Set();
   for (const c of comments) {
     const login = String(c?.user?.login || '');
     const body = typeof c?.body === 'string' ? c.body : '';
     if (!QUOTA_PATTERN.test(body)) continue;
+    const ts = Date.parse(c?.created_at || '');
+    if (Number.isFinite(ts) && Number.isFinite(maxAgeMs) && now - ts > maxAgeMs) continue;
     if (/codex/i.test(login)) providers.add('codex');
     if (/claude/i.test(login)) providers.add('claude');
   }
