@@ -72,6 +72,27 @@ export function selectReviewRoute({ codexEnabled, claudeEnabled, quotaProviders 
   });
 }
 
+export function shouldRunApiReviewer({
+  provider,
+  existingProviders = [],
+  requiredProviders = 1,
+  role = 'primary',
+  forceProvider = false,
+} = {}) {
+  const current = String(provider || '').trim().toLowerCase();
+  if (!current) throw new Error('Missing API review provider');
+  const existing = new Set(existingProviders.map(value => String(value || '').trim().toLowerCase()));
+  if (existing.has(current)) return false;
+  if (forceProvider) return true;
+  if (!Number.isSafeInteger(requiredProviders) || requiredProviders < 1) {
+    throw new Error('Invalid required provider count');
+  }
+  if (existing.size >= requiredProviders) return false;
+  if (role === 'secondary' && requiredProviders < 2) return false;
+  if (!['primary', 'secondary'].includes(role)) throw new Error(`Invalid API reviewer role: ${role}`);
+  return true;
+}
+
 export function updateCircuitState(
   prevState = {},
   { activeProviders = [], quotaProviders = [], inactiveProviders = [], now = Date.now() } = {}
@@ -88,3 +109,4 @@ export function updateCircuitState(
   }
   return next;
 }
+
