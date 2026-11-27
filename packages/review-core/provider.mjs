@@ -26,6 +26,12 @@ export function detectHighRiskSecurityPaths({ allFiles = [], diffText = '' } = {
   return collectChangedPaths({ allFiles, diffText }).filter(filePath => HIGH_RISK_SECURITY_PATH_RE.test(filePath));
 }
 
+export function reviewPathsFromFiles(files = []) {
+  return [...new Set(files.flatMap(file => [file?.filename, file?.previous_filename])
+    .map(value => String(value || '').trim())
+    .filter(Boolean))];
+}
+
 export function requiredProviderCountForReview(input = {}) {
   return detectHighRiskSecurityPaths(input).length ? 2 : 1;
 }
