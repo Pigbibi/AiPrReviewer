@@ -314,7 +314,7 @@ test('executeReviewWithFallback selects DeepSeek or Gemini without mixing provid
       messages,
     },
     async (url, opts) => {
-      geminiCalls.push({ url, body: JSON.parse(opts.body) });
+      geminiCalls.push({ url, headers: opts.headers, body: JSON.parse(opts.body) });
       return {
         ok: true,
         json: async () => ({ candidates: [{ content: { parts: [{ text: '{"summary":"Gemini OK","unresolved_findings":false,"findings":[]}' }] } }] }),
@@ -323,6 +323,8 @@ test('executeReviewWithFallback selects DeepSeek or Gemini without mixing provid
   );
   assert.equal(geminiCalls.length, 1);
   assert.match(geminiCalls[0].url, /gemini-3\.8-flash:generateContent/);
+  assert.doesNotMatch(geminiCalls[0].url, /gemini-synthetic/);
+  assert.equal(geminiCalls[0].headers['x-goog-api-key'], 'gemini-synthetic');
   assert.equal(geminiCalls[0].body.generationConfig.responseMimeType, 'application/json');
   assert.equal(geminiOk.provider, 'gemini');
   assert.equal(geminiOk.model, 'gemini-3.8-flash');
