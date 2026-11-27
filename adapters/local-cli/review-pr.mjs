@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 // Mac mini / local-cli adapter for private repositories.
-// Uses the private dedicated GitHub App (pigbibi-local-ai-reviewer[bot]) and either
-// an OpenAI-compatible API or a local subscription CLI (--engine opencode|gemini|claude|codex).
+// Posts a DeepSeek receipt with the private GitHub App. Codex and Claude are
+// the subscription reviewers; this command does nothing while either flag is on.
 
 import { readFileSync } from 'node:fs';
 import { createPrivateKey } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { createAppJwt } from '../../packages/review-core/crypto.mjs';
 import { getInstallationToken, fetchPrContext, fetchRepoFile, postPrComment } from '../../packages/review-core/github.mjs';
 import { hasReceiptForHead, extractReferencedPaths, buildReviewDiff } from '../../packages/review-core/policy.mjs';
-import { buildReviewMessages, parseVerdict, runDeepSeekReview } from '../../packages/review-core/provider.mjs';
+import { buildReviewMessages, runDeepSeekReview } from '../../packages/review-core/provider.mjs';
 import { formatReceiptComment } from '../../packages/review-core/receipt.mjs';
+import { flagsFromEnv, selectReviewRoute } from '../../packages/review-core/route.mjs';
 
 function normalizePrivateKeyPem(pem) {
   const text = String(pem || '');
@@ -19,28 +19,17 @@ function normalizePrivateKeyPem(pem) {
 }
 
 function parseArgs(argv) {
-  const args = { engine: process.env.AI_REVIEW_ENGINE || 'api', dryRun: false };
+  const args = { dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--repo') args.repo = argv[++i];
     else if (a === '--pr') args.pr = Number(argv[++i]);
-    else if (a === '--opencode') args.engine = 'opencode';
-    else if (a === '--engine') args.engine = argv[++i];
     else if (a === '--dry-run') args.dryRun = true;
   }
   if (!args.repo || !args.repo.includes('/') || !args.pr) {
-    throw new Error('Usage: review-pr.mjs --repo <owner/name> --pr <number> [--engine api|opencode|gemini|claude|codex] [--dry-run]');
+    throw new Error('Usage: review-pr.mjs --repo <owner/name> --pr <number> [--dry-run]');
   }
   return args;
-}
-
-function runCliEngine(engine, prompt) {
-  const opts = { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 };
-  if (engine === 'opencode') return execFileSync('opencode', ['run', '--format', 'json', prompt], opts);
-  if (engine === 'gemini') return execFileSync('gemini', ['-p', prompt, '--output-format', 'text'], opts);
-  if (engine === 'claude') return execFileSync('claude', ['-p', prompt, '--output-format', 'text'], opts);
-  if (engine === 'codex') return execFileSync('codex', ['exec', prompt], opts);
-  throw new Error(`Unsupported CLI engine: ${engine}`);
 }
 
 async function main() {
@@ -64,6 +53,11 @@ async function main() {
     console.log(`PR #${args.pr} (${headSha.slice(0, 7)}) already has an AI review receipt.`);
     return;
   }
+  const route = selectReviewRoute(flagsFromEnv(process.env));
+  if (route.kind !== 'deepseek') {
+    console.log(`Subscription reviewer is enabled (${route.providers.join(', ')}); DeepSeek was not called.`);
+    return;
+  }
 
   const { diffText, truncated, includedFiles } = buildReviewDiff(ctx.files);
   const refPaths = extractReferencedPaths(ctx.files, 3);
@@ -81,24 +75,16 @@ async function main() {
     allFiles: includedFiles,
   });
 
-  let verdict;
-  let provider = args.engine === 'api' ? (process.env.AI_REVIEW_PROVIDER || 'opencode') : args.engine;
-  let model = process.env.AI_REVIEW_MODEL || (args.engine === 'api' ? 'gemini-4-hydrogen' : args.engine);
-
-  if (args.engine !== 'api') {
-    const prompt = `${messages.system}\n\n${messages.user}`;
-    const out = runCliEngine(args.engine, prompt);
-    verdict = parseVerdict(out);
-  } else {
-    const apiKey = process.env.AI_API_KEY || process.env.GEMINI_API_KEY || process.env.DEEPSEEK_API_KEY;
-    if (!apiKey) throw new Error('Missing AI_API_KEY, GEMINI_API_KEY, or DEEPSEEK_API_KEY');
-    verdict = await runDeepSeekReview({
-      apiKey,
-      baseUrl: process.env.AI_REVIEW_BASE_URL,
-      model,
-      messages,
-    });
-  }
+  const model = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) throw new Error('Missing DEEPSEEK_API_KEY');
+  const verdict = await runDeepSeekReview({
+    apiKey,
+    baseUrl: process.env.DEEPSEEK_BASE_URL,
+    model,
+    messages,
+  });
+  const provider = 'deepseek';
 
   const body = formatReceiptComment({ headSha, provider, model, verdict, truncated });
   if (args.dryRun) {

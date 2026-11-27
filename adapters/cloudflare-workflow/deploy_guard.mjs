@@ -15,11 +15,7 @@ export const REQUIRED_BASE_SECRETS = Object.freeze([
 ]);
 
 export const PROVIDER_SECRET_CANDIDATES = Object.freeze([
-  'GCP_SERVICE_ACCOUNT_JSON',
   'DEEPSEEK_API_KEY',
-  'AI_API_KEY',
-  'GEMINI_API_KEY',
-  'AI_SERVICE_URL',
 ]);
 
 export function parseSecretListOutput(rawStdout) {
