@@ -20,6 +20,7 @@ import {
 } from '../packages/review-core/policy.mjs';
 import {
   isDocOnlyChange,
+  reviewPathsFromFiles,
   requiredProviderCountForReview,
   parseVerdict,
   runDeepSeekReview,
@@ -521,6 +522,10 @@ test('API reviewers respect quorum, provider identity and secondary-only role', 
   assert.equal(requiredProviderCountForReview({ allFiles: ['src/view.js'] }), 1);
   assert.equal(requiredProviderCountForReview({ allFiles: ['.github/workflows/release.yml'] }), 2);
   assert.equal(requiredProviderCountForReview({ allFiles: ['src/auth/token.py'] }), 2);
+  assert.equal(requiredProviderCountForReview({ allFiles: reviewPathsFromFiles([{
+    filename: 'src/handler.py',
+    previous_filename: 'src/auth/handler.py',
+  }]) }), 2);
   assert.equal(shouldRunApiReviewer({
     provider: 'deepseek', existingProviders: [], requiredProviders: 1, role: 'primary',
   }), true);
