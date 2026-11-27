@@ -15,6 +15,7 @@ import {
 } from '../../packages/review-core/policy.mjs';
 import {
   buildReviewMessages,
+  reviewPathsFromFiles,
   requiredProviderCountForReview,
   executeReviewWithFallback,
 } from '../../packages/review-core/provider.mjs';
@@ -66,7 +67,7 @@ async function main() {
   const reviewerProviders = reviewerProvidersFromEnv(process.env);
   const existingProviders = collectTrustedReviewProviders(ctx.comments, headSha, { reviewerProviders });
   const requiredProviders = requiredProviderCountForReview({
-    allFiles: ctx.files.map(file => file.filename).filter(Boolean),
+    allFiles: reviewPathsFromFiles(ctx.files),
   });
   if (!shouldRunApiReviewer({ provider, role, existingProviders, requiredProviders })) {
     console.log(`Review quorum already satisfied or ${provider} is not required for this PR.`);
