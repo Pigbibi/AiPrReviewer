@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyWebhookSignature, createAppJwt, getGcpAccessToken } from '../packages/review-core/crypto.mjs';
+import { fetchPrContext } from '../packages/review-core/github.mjs';
 import {
   hasReceiptForHead,
   collectTrustedReviewProviders,
@@ -172,6 +173,44 @@ test('getGcpAccessToken exchanges signed RS256 assertion for OAuth2 token', asyn
   assert.equal(out.accessToken, 'ya29.synthetic');
   assert.equal(out.projectId, 'synthetic-proj');
   assert.match(capturedBody, /grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer/);
+});
+
+test('fetchPrContext paginates the complete changed-file list and rejects incomplete coverage', async () => {
+  const files = Array.from({ length: 101 }, (_, i) => ({ filename: `src/f${i}.js` }));
+  const response = value => ({ ok: true, json: async () => value });
+  const fetchImpl = async url => {
+    if (/\/pulls\/7$/.test(url)) return response({
+      number: 7,
+      changed_files: 101,
+      base: { ref: 'main' },
+      head: { sha: 'a'.repeat(40) },
+    });
+    if (/\/pulls\/7\/files\?per_page=100&page=1$/.test(url)) return response(files.slice(0, 100));
+    if (/\/pulls\/7\/files\?per_page=100&page=2$/.test(url)) return response(files.slice(100));
+    if (/\/issues\/7\/comments\?per_page=100&page=1$/.test(url)) return response([]);
+    if (/\/contents\/AGENTS\.md\?/.test(url)) return response({ content: btoa('# rules') });
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const ctx = await fetchPrContext('Org', 'Repo', 7, 'token', fetchImpl);
+  assert.equal(ctx.files.length, 101);
+
+  const incomplete = async url => {
+    if (/\/pulls\/7$/.test(url)) return response({
+      number: 7,
+      changed_files: 101,
+      base: { ref: 'main' },
+      head: { sha: 'a'.repeat(40) },
+    });
+    if (/\/pulls\/7\/files\?per_page=100&page=1$/.test(url)) return response(files.slice(0, 100));
+    if (/\/pulls\/7\/files\?per_page=100&page=2$/.test(url)) return response([]);
+    if (/\/issues\/7\/comments\?per_page=100&page=1$/.test(url)) return response([]);
+    if (/\/contents\/AGENTS\.md\?/.test(url)) return response({ content: btoa('# rules') });
+    throw new Error(`unexpected URL ${url}`);
+  };
+  await assert.rejects(
+    () => fetchPrContext('Org', 'Repo', 7, 'token', incomplete),
+    /Incomplete pull request file list/
+  );
 });
 
 test('hasReceiptForHead distinguishes running vs completed codex-review-state markers', () => {
