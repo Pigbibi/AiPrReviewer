@@ -88,7 +88,10 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
         if (ctx.pr.head.sha !== headSha) return { proceed: false, reason: 'stale_head' };
 
         const now = Date.now();
-        const activeProviders = detectActiveSubscriptionProviders(ctx.comments, headSha);
+        const minTimestampByProvider = Object.fromEntries(
+          Object.entries(circuitState).map(([p, entry]) => [p, entry?.updatedAt || 0])
+        );
+        const activeProviders = detectActiveSubscriptionProviders(ctx.comments, headSha, { minTimestampByProvider });
         if (hasReceiptForHead(ctx.comments, headSha)) {
           if (activeProviders.length) {
             await saveProviderStates(this.env, owner, updateCircuitState({}, { activeProviders, now }));
@@ -135,7 +138,10 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       if (shouldSkipPrState(ctx.pr, { allowDraft })) return { skip: true, reason: 'closed_or_draft' };
       if (ctx.pr.head.sha !== headSha) return { skip: true, reason: 'stale_head' };
       const now = Date.now();
-      const activeProviders = detectActiveSubscriptionProviders(ctx.comments, headSha);
+      const minTimestampByProvider = Object.fromEntries(
+        Object.entries(circuitState).map(([p, entry]) => [p, entry?.updatedAt || 0])
+      );
+      const activeProviders = detectActiveSubscriptionProviders(ctx.comments, headSha, { minTimestampByProvider });
       const quotaProviders = detectQuotaProviders(ctx.comments, { now });
       const updates = updateCircuitState({}, { activeProviders, quotaProviders, now });
       if (Object.keys(updates).length) {

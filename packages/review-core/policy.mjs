@@ -107,13 +107,16 @@ export function detectQuotaProviders(comments = [], { maxAgeMs = 30 * 60 * 1000,
   return [...providers];
 }
 
-export function detectActiveSubscriptionProviders(comments = [], headSha = '') {
+export function detectActiveSubscriptionProviders(comments = [], headSha = '', { minTimestampByProvider = {} } = {}) {
   const providers = new Set();
   for (const c of comments) {
     const provider = trustedSubscriptionProvider(c?.user);
     if (!provider) continue;
     const body = typeof c?.body === 'string' ? c.body : '';
     if (!headSha || !body.includes(headSha)) continue;
+    const minTs = minTimestampByProvider[provider] || 0;
+    const ts = Date.parse(c?.updated_at || c?.created_at || '');
+    if (minTs > 0 && (!Number.isFinite(ts) || ts <= minTs)) continue;
     if (provider === 'codex' && (body.includes('codex-review-state:v1') || body.includes('ai-review-receipt:v1'))) {
       providers.add('codex');
     }
