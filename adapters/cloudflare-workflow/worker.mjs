@@ -6,7 +6,8 @@ import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { verifyWebhookSignature, createAppJwt } from '../../packages/review-core/crypto.mjs';
 import { getInstallationToken, fetchPrContext, fetchRepoFile, postPrComment } from '../../packages/review-core/github.mjs';
 import {
-  hasReceiptForHead,
+  collectTrustedReviewProviders,
+  reviewerProvidersFromEnv,
   isReviewInProgressForHead,
   detectQuotaProviders,
   detectActiveSubscriptionProviders,
@@ -17,18 +18,24 @@ import {
 } from '../../packages/review-core/policy.mjs';
 import {
   buildReviewMessages,
+  requiredProviderCountForReview,
   executeReviewWithFallback,
   mergeBatchVerdicts,
 } from '../../packages/review-core/provider.mjs';
-import { flagsFromEnv, selectAdaptiveRoute, updateCircuitState } from '../../packages/review-core/route.mjs';
+import {
+  flagsFromEnv,
+  selectAdaptiveRoute,
+  shouldRunApiReviewer,
+  updateCircuitState,
+} from '../../packages/review-core/route.mjs';
 import { formatReceiptComment } from '../../packages/review-core/receipt.mjs';
 
-async function loadCircuitState(env, owner) {
+async function loadCircuitState(env, scope) {
   if (!env?.ROUTE_STATE_KV) return {};
   try {
     const [codex, claude] = await Promise.all([
-      env.ROUTE_STATE_KV.get(`route:v1:${owner}:codex`, 'json'),
-      env.ROUTE_STATE_KV.get(`route:v1:${owner}:claude`, 'json'),
+      env.ROUTE_STATE_KV.get(`route:v2:${scope}:codex`, 'json'),
+      env.ROUTE_STATE_KV.get(`route:v2:${scope}:claude`, 'json'),
     ]);
     return {
       ...(codex ? { codex } : {}),
@@ -39,12 +46,12 @@ async function loadCircuitState(env, owner) {
   }
 }
 
-async function saveProviderStates(env, owner, updates) {
+async function saveProviderStates(env, scope, updates) {
   if (!env?.ROUTE_STATE_KV) return;
   try {
     await Promise.all(
       Object.entries(updates).map(([provider, entry]) =>
-        env.ROUTE_STATE_KV.put(`route:v1:${owner}:${provider}`, JSON.stringify(entry), {
+        env.ROUTE_STATE_KV.put(`route:v2:${scope}:${provider}`, JSON.stringify(entry), {
           expirationTtl: 7 * 24 * 60 * 60,
         })
       )
@@ -63,12 +70,17 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       installationId,
       headSha,
       immediate,
+      forceProvider = false,
       allowDraft = false,
     } = event.payload;
     const waitMinutes = Number(this.env.FALLBACK_WAIT_MINUTES ?? '12');
     const probeMinutes = Math.min(waitMinutes, Number(this.env.CODEX_PROBE_MINUTES ?? '2'));
     const flags = flagsFromEnv(this.env);
-    const circuitState = await step.do('load-route-state', () => loadCircuitState(this.env, owner));
+    const scope = `${owner}/${repo}`.toLowerCase();
+    const provider = String(this.env.AI_REVIEW_PROVIDER || 'deepseek').trim().toLowerCase();
+    const providerRole = String(this.env.AI_REVIEW_PROVIDER_ROLE || 'primary').trim().toLowerCase();
+    const reviewerProviders = reviewerProvidersFromEnv(this.env);
+    const circuitState = await step.do('load-route-state', () => loadCircuitState(this.env, scope));
     const route = selectAdaptiveRoute({
       codexMode: flags.codexMode,
       claudeMode: flags.claudeMode,
@@ -92,21 +104,32 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
           Object.entries(circuitState).map(([p, entry]) => [p, entry?.updatedAt || 0])
         );
         const activeProviders = detectActiveSubscriptionProviders(ctx.comments, headSha, { minTimestampByProvider });
-        if (hasReceiptForHead(ctx.comments, headSha)) {
+        const existingProviders = collectTrustedReviewProviders(ctx.comments, headSha, { reviewerProviders });
+        const requiredProviders = requiredProviderCountForReview({
+          allFiles: ctx.files.map(file => file.filename).filter(Boolean),
+        });
+        const needsApiProvider = shouldRunApiReviewer({
+          provider,
+          role: providerRole,
+          existingProviders,
+          requiredProviders,
+          forceProvider,
+        });
+        if (!needsApiProvider) {
           if (activeProviders.length) {
-            await saveProviderStates(this.env, owner, updateCircuitState({}, { activeProviders, now }));
+            await saveProviderStates(this.env, scope, updateCircuitState({}, { activeProviders, now }));
           }
-          return { proceed: false, reason: 'already_reviewed' };
+          return { proceed: false, reason: 'review_quorum_satisfied' };
         }
 
         const quotaProviders = detectQuotaProviders(ctx.comments, { now })
           .filter(p => route.providers.includes(p));
-        const running = isReviewInProgressForHead(ctx.comments, headSha);
+        const running = isReviewInProgressForHead(ctx.comments, headSha, { reviewerProviders });
 
         if (running) {
           const updates = updateCircuitState({}, { activeProviders, quotaProviders, now });
           if (Object.keys(updates).length) {
-            await saveProviderStates(this.env, owner, updates);
+            await saveProviderStates(this.env, scope, updates);
           }
           return {
             proceed: true,
@@ -117,7 +140,7 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
         const inactiveProviders = route.autoProbed.filter(p => !quotaProviders.includes(p));
         const updates = updateCircuitState({}, { quotaProviders, inactiveProviders, now });
         if (Object.keys(updates).length) {
-          await saveProviderStates(this.env, owner, updates);
+          await saveProviderStates(this.env, scope, updates);
         }
         return { proceed: true, waitRemainingMinutes: 0 };
       });
@@ -128,6 +151,15 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
 
       if (probe.waitRemainingMinutes > 0) {
         await step.sleep('wait-active-primary', `${probe.waitRemainingMinutes} minutes`);
+      }
+    }
+
+    // A secondary App is a resilience backstop, not a parallel cost multiplier.
+    // Give the primary API reviewer time to publish before the final quorum check.
+    if (!forceProvider && providerRole === 'secondary') {
+      const secondaryGraceMinutes = Number(this.env.SECONDARY_GRACE_MINUTES ?? '3');
+      if (secondaryGraceMinutes > 0) {
+        await step.sleep('wait-primary-api-reviewer', `${secondaryGraceMinutes} minutes`);
       }
     }
 
@@ -145,9 +177,19 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       const quotaProviders = detectQuotaProviders(ctx.comments, { now });
       const updates = updateCircuitState({}, { activeProviders, quotaProviders, now });
       if (Object.keys(updates).length) {
-        await saveProviderStates(this.env, owner, updates);
+        await saveProviderStates(this.env, scope, updates);
       }
-      if (hasReceiptForHead(ctx.comments, headSha)) return { skip: true, reason: 'already_reviewed' };
+      const existingProviders = collectTrustedReviewProviders(ctx.comments, headSha, { reviewerProviders });
+      const requiredProviders = requiredProviderCountForReview({
+        allFiles: ctx.files.map(file => file.filename).filter(Boolean),
+      });
+      if (!shouldRunApiReviewer({
+        provider,
+        role: providerRole,
+        existingProviders,
+        requiredProviders,
+        forceProvider,
+      })) return { skip: true, reason: 'review_quorum_satisfied' };
       const { batches, allReviewableFiles, truncated } = buildReviewBatches(ctx.files);
       if (!batches.length) return { skip: true, reason: 'empty_diff' };
       const refPaths = extractReferencedPaths(ctx.files, 3);
@@ -164,6 +206,8 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
         batches,
         allReviewableFiles,
         truncated,
+        existingProviders,
+        requiredProviders,
       };
     });
 
@@ -217,6 +261,8 @@ export class PrReviewWorkflow extends WorkflowEntrypoint {
       batches: totalBatches,
       truncated: reviewContext.truncated,
       unresolved: merged.verdict.unresolved_findings,
+      requiredProviders: reviewContext.requiredProviders,
+      existingProviders: reviewContext.existingProviders,
     };
   }
 }
@@ -242,7 +288,7 @@ export default {
       return new Response(plan.reason, { status: 202 });
     }
 
-    const { owner, repo, installationId, prNumber, immediate, allowDraft } = plan;
+    const { owner, repo, installationId, prNumber, immediate, forceProvider, allowDraft } = plan;
     let headSha = plan.headSha || null;
     if (plan.action === 'fetch_and_dispatch') {
       const jwt = await createAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
@@ -261,9 +307,10 @@ export default {
       : baseId;
     await env.PR_REVIEW_WORKFLOW.create({
       id: instanceId,
-      params: { owner, repo, prNumber, installationId, headSha, immediate, allowDraft },
+      params: { owner, repo, prNumber, installationId, headSha, immediate, forceProvider, allowDraft },
     });
 
     return Response.json({ accepted: true, instanceId }, { status: 202 });
   },
 };
+
