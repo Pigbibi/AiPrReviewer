@@ -4,7 +4,9 @@ compatibility_date = "2026-01-01"
 
 [vars]
 AI_REVIEW_PROVIDER = "deepseek"
-AI_REVIEW_MODEL = "deepseek-chat"
+AI_REVIEW_PROVIDER_ROLE = "primary"
+DEEPSEEK_MODEL = "deepseek-flash"
+REVIEWER_LOGIN = "qsl-ai-reviewer[bot]"
 CODEX_PROBE_MINUTES = "2"
 FALLBACK_WAIT_MINUTES = "12"
 REVIEW_MENTION_HANDLE = "@qsl-ai-reviewer review"
@@ -17,3 +19,4 @@ id = "ce6ef4bb7e8447d1b6b6f82dae8875a6"
 name = "qsl-pr-review-workflow"
 binding = "PR_REVIEW_WORKFLOW"
 class_name = "PrReviewWorkflow"
+

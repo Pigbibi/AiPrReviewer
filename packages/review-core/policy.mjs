@@ -27,13 +27,23 @@ function extractMarkerPayload(body, marker) {
   }
 }
 
-export function isReviewInProgressForHead(comments, headSha) {
+export function isReviewInProgressForHead(
+  comments,
+  headSha,
+  { reviewerProviders = {} } = {}
+) {
   if (isCodexRunningForHead(comments, headSha)) return true;
+  const trusted = normalizedReviewerProviders(reviewerProviders);
   return comments.some(comment => {
     if (typeof comment.body !== 'string' || !comment.body.includes(headSha)) return false;
     const receipt = extractMarkerPayload(comment.body, 'ai-review-receipt:v1');
+    const subscription = trustedSubscriptionProvider(comment?.user);
+    const login = String(comment?.user?.login || '').trim().toLowerCase();
+    const claimed = String(receipt?.review?.provider || subscription || '').trim().toLowerCase();
+    const trustedProvider = subscription === claimed || trusted.get(login)?.has(claimed);
     return Boolean(
-      receipt
+      trustedProvider
+      && receipt
       && receipt.review
       && receipt.review.commit_sha === headSha
       && receipt.review.status
@@ -44,6 +54,7 @@ export function isReviewInProgressForHead(comments, headSha) {
 
 export function isCodexRunningForHead(comments, headSha) {
   return comments.some(c => {
+    if (trustedSubscriptionProvider(c?.user) !== 'codex') return false;
     if (typeof c.body !== 'string' || !c.body.includes(headSha)) return false;
     const state = extractMarkerPayload(c.body, 'codex-review-state:v1');
     return Boolean(
@@ -52,29 +63,6 @@ export function isCodexRunningForHead(comments, headSha) {
       && state.code_review.commit_sha === headSha
       && state.code_review.status !== 'completed'
     );
-  });
-}
-
-export function hasReceiptForHead(comments, headSha) {
-  return comments.some(c => {
-    if (typeof c.body !== 'string' || !c.body.includes(headSha)) return false;
-    if (c.body.includes('codex-review-state:v1')) {
-      const state = extractMarkerPayload(c.body, 'codex-review-state:v1');
-      return Boolean(
-        state
-        && state.code_review
-        && state.code_review.commit_sha === headSha
-        && state.code_review.status === 'completed'
-      );
-    }
-    if (c.body.includes('ai-review-receipt:v1')) {
-      const receipt = extractMarkerPayload(c.body, 'ai-review-receipt:v1');
-      if (receipt && receipt.review) {
-        return receipt.review.commit_sha === headSha
-          && (!receipt.review.status || receipt.review.status === 'completed');
-      }
-    }
-    return RECEIPT_MARKERS.some(m => m !== 'codex-review-state:v1' && c.body.includes(m));
   });
 }
 
@@ -90,6 +78,95 @@ function trustedSubscriptionProvider(user) {
   if (TRUSTED_CODEX_LOGINS.has(login)) return 'codex';
   if (TRUSTED_CLAUDE_LOGINS.has(login)) return 'claude';
   return null;
+}
+
+function normalizedReviewerProviders(reviewerProviders = {}) {
+  const normalized = new Map();
+  for (const [login, providers] of Object.entries(reviewerProviders || {})) {
+    const key = String(login || '').trim().toLowerCase();
+    const values = Array.isArray(providers) ? providers : [providers];
+    const valid = values.map(value => String(value || '').trim().toLowerCase()).filter(Boolean);
+    if (key && valid.length) normalized.set(key, new Set(valid));
+  }
+  return normalized;
+}
+
+function completedReceiptProvider(comment, headSha, reviewerProviders) {
+  const login = String(comment?.user?.login || '').trim().toLowerCase();
+  const body = typeof comment?.body === 'string' ? comment.body : '';
+  if (!headSha || !body.includes(headSha)) return null;
+
+  const subscription = trustedSubscriptionProvider(comment?.user);
+  if (subscription === 'codex' && body.includes('codex-review-state:v1')) {
+    const state = extractMarkerPayload(body, 'codex-review-state:v1');
+    return state?.code_review?.commit_sha === headSha && state.code_review.status === 'completed'
+      ? 'codex' : null;
+  }
+
+  const marker = body.includes('ai-review-receipt:v1')
+    ? 'ai-review-receipt:v1'
+    : body.includes('codex-review-receipt:v1') ? 'codex-review-receipt:v1' : null;
+  if (!marker) return null;
+  const receipt = extractMarkerPayload(body, marker);
+  const review = receipt?.review;
+  if (!review || review.commit_sha !== headSha
+    || (review.status && review.status !== 'completed')) return null;
+
+  if (subscription) {
+    const claimed = String(review.provider || subscription).trim().toLowerCase();
+    return claimed === subscription ? subscription : null;
+  }
+
+  const allowed = reviewerProviders.get(login);
+  const claimed = String(review.provider || '').trim().toLowerCase();
+  return allowed?.has(claimed) ? claimed : null;
+}
+
+export function collectTrustedReviewProviders(
+  comments = [],
+  headSha = '',
+  { reviewerProviders = {} } = {}
+) {
+  const trusted = normalizedReviewerProviders(reviewerProviders);
+  const providers = new Set();
+  for (const comment of comments) {
+    const provider = completedReceiptProvider(comment, headSha, trusted);
+    if (provider) providers.add(provider);
+  }
+  return [...providers].sort();
+}
+
+export function reviewerProvidersFromEnv(env = {}) {
+  const mapping = {};
+  const raw = String(env.TRUSTED_REVIEWERS_JSON || '').trim();
+  if (raw) {
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('Invalid TRUSTED_REVIEWERS_JSON');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Invalid TRUSTED_REVIEWERS_JSON');
+    }
+    for (const [login, providers] of Object.entries(parsed)) {
+      const values = Array.isArray(providers) ? providers : [providers];
+      if (!String(login || '').trim() || !values.length || values.some(value => !String(value || '').trim())) {
+        throw new Error('Invalid TRUSTED_REVIEWERS_JSON');
+      }
+      mapping[String(login).trim().toLowerCase()] = values.map(value => String(value).trim().toLowerCase());
+    }
+  }
+  const selfLogin = String(env.REVIEWER_LOGIN || '').trim().toLowerCase();
+  const selfProvider = String(env.AI_REVIEW_PROVIDER || 'deepseek').trim().toLowerCase();
+  if (selfLogin) {
+    mapping[selfLogin] = [...new Set([...(mapping[selfLogin] || []), selfProvider])];
+  }
+  return mapping;
+}
+
+export function hasReceiptForHead(comments, headSha, options = {}) {
+  return collectTrustedReviewProviders(comments, headSha, options).length > 0;
 }
 
 export function detectQuotaProviders(comments = [], { maxAgeMs = 30 * 60 * 1000, now = Date.now() } = {}) {
@@ -317,9 +394,11 @@ export function planPullRequestWebhook({ eventName, payload, mentionHandle, fall
       prNumber: payload.issue.number,
       commentId: payload?.comment?.id,
       immediate: true,
+      forceProvider: Boolean(mentioned),
       allowDraft: Boolean(mentioned),
     };
   }
 
   return { action: 'ignore', reason: 'Event ignored' };
 }
+

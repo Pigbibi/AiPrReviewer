@@ -1,7 +1,7 @@
 // Provider adapter for OpenAI-compatible Chat Completions API and AIService bridge.
 
 const HIGH_RISK_SECURITY_PATH_RE =
-  /^(?:\.github\/workflows\/|deploy\/|ops\/|.*wrangler.*\.toml$|.*(?:auth|oauth|login|session|jwt|token|secret|key|crypto|webhook|signature|permission|rbac|iam|payment|charge|order|trade|execution|risk|sql|migration|security).*)/i;
+  /^(?:\.github\/(?:workflows|actions)\/|(?:.*\/)?action\.ya?ml$|packages\/review-core\/|adapters\/(?:cloudflare-workflow|local-cli)\/|deploy\/|ops\/|.*wrangler.*\.toml$|.*(?:auth|oauth|login|session|jwt|token|secret|key|crypto|webhook|signature|permission|rbac|iam|payment|charge|order|trade|execution|risk|sql|migration|security).*)/i;
 const DOC_ONLY_PATH_RE = /\.(?:md|txt|rst)$/i;
 const MACHINE_TEXT_FILE_RE =
   /(?:^|\/)(?:requirements[^/]*\.txt|constraints[^/]*\.txt|cmakelists\.txt|robots\.txt|humans\.txt)$/i;
@@ -24,6 +24,16 @@ function collectChangedPaths({ allFiles = [], diffText = '' } = {}) {
 
 export function detectHighRiskSecurityPaths({ allFiles = [], diffText = '' } = {}) {
   return collectChangedPaths({ allFiles, diffText }).filter(filePath => HIGH_RISK_SECURITY_PATH_RE.test(filePath));
+}
+
+export function reviewPathsFromFiles(files = []) {
+  return [...new Set(files.flatMap(file => [file?.filename, file?.previous_filename])
+    .map(value => String(value || '').trim())
+    .filter(Boolean))];
+}
+
+export function requiredProviderCountForReview(input = {}) {
+  return detectHighRiskSecurityPaths(input).length ? 2 : 1;
 }
 
 export function isDocOnlyChange({ allFiles = [], diffText = '' } = {}) {
@@ -117,7 +127,7 @@ export function parseVerdict(rawText) {
 
 export async function runDeepSeekReview({ apiKey, baseUrl, model, messages }, fetchImpl = fetch) {
   const endpoint = baseUrl || 'https://api.deepseek.com/chat/completions';
-  const modelName = model || 'deepseek-chat';
+  const modelName = model || 'deepseek-flash';
   const res = await fetchImpl(endpoint, {
     method: 'POST',
     headers: {
@@ -139,6 +149,35 @@ export async function runDeepSeekReview({ apiKey, baseUrl, model, messages }, fe
   }
   const data = await res.json();
   return parseVerdict(data?.choices?.[0]?.message?.content);
+}
+
+export async function runGeminiReview({ apiKey, baseUrl, model, messages }, fetchImpl = fetch) {
+  if (!apiKey) throw new Error('Missing GEMINI_API_KEY');
+  const modelName = model || 'gemini-3.8-flash';
+  const base = String(baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
+  const endpoint = `${base}/models/${encodeURIComponent(modelName)}:generateContent`;
+  const res = await fetchImpl(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: messages.system }] },
+      contents: [{ role: 'user', parts: [{ text: messages.user }] }],
+      generationConfig: {
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`Gemini API failed with HTTP ${res.status}`);
+  const data = await res.json();
+  const raw = data?.candidates?.[0]?.content?.parts
+    ?.map(part => typeof part?.text === 'string' ? part.text : '')
+    .join('');
+  if (!raw) throw new Error('Gemini API returned no review content');
+  return parseVerdict(raw);
 }
 
 export async function runAiServiceReview({ serviceUrl, serviceToken, project, pr, messages }, fetchImpl = fetch) {
@@ -173,7 +212,7 @@ export function mergeBatchVerdicts(batchResults) {
     return {
       verdict: { summary: 'No reviewable changes.', unresolved_findings: false, findings: [] },
       provider: 'deepseek',
-      model: 'deepseek-chat',
+      model: 'deepseek-flash',
     };
   }
   if (batchResults.length === 1) {
@@ -209,18 +248,26 @@ export function mergeBatchVerdicts(batchResults) {
 }
 
 export async function executeReviewWithFallback({ env, messages }, fetchImpl = fetch) {
-  if (!env.DEEPSEEK_API_KEY) {
-    throw new Error('No DeepSeek review credentials configured');
-  }
-  const model = env.DEEPSEEK_MODEL || 'deepseek-chat';
-  const verdict = await runDeepSeekReview(
-    {
-      apiKey: env.DEEPSEEK_API_KEY,
-      baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions',
+  const provider = String(env.AI_REVIEW_PROVIDER || 'deepseek').trim().toLowerCase();
+  if (provider === 'gemini') {
+    const model = env.GEMINI_MODEL || 'gemini-3.8-flash';
+    const verdict = await runGeminiReview({
+      apiKey: env.GEMINI_API_KEY,
+      baseUrl: env.GEMINI_BASE_URL,
       model,
       messages,
-    },
-    fetchImpl
-  );
-  return { verdict, provider: 'deepseek', model };
+    }, fetchImpl);
+    return { verdict, provider, model };
+  }
+  if (provider !== 'deepseek') throw new Error(`Unsupported API review provider: ${provider}`);
+  if (!env.DEEPSEEK_API_KEY) throw new Error('No DeepSeek review credentials configured');
+  const model = env.DEEPSEEK_MODEL || 'deepseek-flash';
+  const verdict = await runDeepSeekReview({
+    apiKey: env.DEEPSEEK_API_KEY,
+    baseUrl: env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/chat/completions',
+    model,
+    messages,
+  }, fetchImpl);
+  return { verdict, provider, model };
 }
+
