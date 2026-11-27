@@ -39,6 +39,8 @@ An explicit `@<reviewer> review` mention forces that App's provider to review th
 
 No API key belongs in TOML, repository variables, comments, or receipts. Keep provider credentials in Worker secrets or the local machine's secret store.
 
+The local CLI also requires `REVIEWER_LOGIN`; it refuses to spend API credits when it cannot bind existing receipts to its own authenticated App identity.
+
 ## Verification
 
 ```sh
