@@ -10,6 +10,7 @@ REVIEWER_LOGIN = "gdei-ai-reviewer[bot]"
 CODEX_PROBE_MINUTES = "2"
 FALLBACK_WAIT_MINUTES = "12"
 REVIEW_MENTION_HANDLE = "@gdei-ai-reviewer review"
+TRUSTED_REVIEWERS_JSON = '{"gdei-gemini-reviewer[bot]":["gemini"]}'
 
 [[kv_namespaces]]
 binding = "ROUTE_STATE_KV"

@@ -3,22 +3,53 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const TARGET_WORKERS = Object.freeze({
-  qsl: Object.freeze({ config: 'wrangler.qsl.toml', worker: 'qsl-pr-reviewer' }),
-  gdei: Object.freeze({ config: 'wrangler.gdei.toml', worker: 'gdei-pr-reviewer' }),
-  pigbibi: Object.freeze({ config: 'wrangler.pigbibi.toml', worker: 'pigbibi-pr-reviewer' }),
+  qsl: Object.freeze({
+    config: 'wrangler.qsl.toml',
+    worker: 'qsl-pr-reviewer',
+    githubAppIdEnv: 'GITHUB_APP_ID',
+    expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_QSL',
+    providerSecret: 'DEEPSEEK_API_KEY',
+  }),
+  gdei: Object.freeze({
+    config: 'wrangler.gdei.toml',
+    worker: 'gdei-pr-reviewer',
+    githubAppIdEnv: 'GITHUB_APP_ID',
+    expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_GDEI',
+    providerSecret: 'DEEPSEEK_API_KEY',
+  }),
+  pigbibi: Object.freeze({
+    config: 'wrangler.pigbibi.toml',
+    worker: 'pigbibi-pr-reviewer',
+    githubAppIdEnv: 'GITHUB_APP_ID',
+    expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_PIGBIBI',
+    providerSecret: 'DEEPSEEK_API_KEY',
+  }),
+  'qsl-gemini': Object.freeze({
+    config: 'wrangler.qsl-gemini.toml',
+    worker: 'qsl-gemini-pr-reviewer',
+    githubAppIdEnv: 'QSL_GEMINI_GITHUB_APP_ID',
+    expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_QSL_GEMINI',
+    providerSecret: 'GEMINI_API_KEY',
+  }),
+  'gdei-gemini': Object.freeze({
+    config: 'wrangler.gdei-gemini.toml',
+    worker: 'gdei-gemini-pr-reviewer',
+    githubAppIdEnv: 'GDEI_GEMINI_GITHUB_APP_ID',
+    expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_GDEI_GEMINI',
+    providerSecret: 'GEMINI_API_KEY',
+  }),
+  'pigbibi-gemini': Object.freeze({
+    config: 'wrangler.pigbibi-gemini.toml',
+    worker: 'pigbibi-gemini-pr-reviewer',
+    githubAppIdEnv: 'PIGBIBI_GEMINI_GITHUB_APP_ID',
+    expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_PIGBIBI_GEMINI',
+    providerSecret: 'GEMINI_API_KEY',
+  }),
 });
 
 export const REQUIRED_BASE_SECRETS = Object.freeze([
   'GITHUB_WEBHOOK_SECRET',
   'GITHUB_APP_PRIVATE_KEY',
-]);
-
-export const REQUIRED_BASE_VARIABLES = Object.freeze([
-  'GITHUB_APP_ID',
-]);
-
-export const PROVIDER_SECRET_CANDIDATES = Object.freeze([
-  'DEEPSEEK_API_KEY',
 ]);
 
 export function parseSecretListOutput(rawStdout) {
@@ -49,7 +80,7 @@ export function validateDeployPreconditions({
     );
   }
 
-  const expectedKey = `EXPECTED_CLOUDFLARE_ACCOUNT_ID_${target.toUpperCase()}`;
+  const expectedKey = spec.expectedAccountEnv;
   const expectedAccountId = String(env[expectedKey] || '').trim();
   if (expectedAccountId && expectedAccountId !== accountId) {
     throw new Error(
@@ -58,7 +89,7 @@ export function validateDeployPreconditions({
   }
 
   if (!allowBootstrap) {
-    const missingVariables = REQUIRED_BASE_VARIABLES.filter(name => !String(env[name] || '').trim());
+    const missingVariables = [spec.githubAppIdEnv].filter(name => !String(env[name] || '').trim());
     if (missingVariables.length) {
       throw new Error(
         `Refusing deploy of ${spec.worker} to account ${accountId}: missing required variables [${missingVariables.join(', ')}]`
@@ -72,15 +103,14 @@ export function validateDeployPreconditions({
         `Refusing deploy of ${spec.worker} to account ${accountId}: missing required secrets [${missingBase.join(', ')}] (pass --allow-bootstrap only for initial setup)`
       );
     }
-    const hasProvider = PROVIDER_SECRET_CANDIDATES.some(name => present.has(name));
-    if (!hasProvider) {
+    if (!present.has(spec.providerSecret)) {
       throw new Error(
-        `Refusing deploy of ${spec.worker} to account ${accountId}: missing AI provider secret (need one of ${PROVIDER_SECRET_CANDIDATES.join(', ')})`
+        `Refusing deploy of ${spec.worker} to account ${accountId}: missing required provider secret [${spec.providerSecret}]`
       );
     }
   }
 
-  return spec;
+  return { ...spec, githubAppId: String(env[spec.githubAppIdEnv] || '').trim() };
 }
 
 export function buildDeployArgs(configPath, githubAppId) {
@@ -122,7 +152,7 @@ export function runDeployCli(argv = process.argv.slice(2), env = process.env) {
     secretNames = parseSecretListOutput(rawSecrets);
   }
 
-  validateDeployPreconditions({ target, env, secretNames, allowBootstrap });
+  const validated = validateDeployPreconditions({ target, env, secretNames, allowBootstrap });
   const configPath = resolve(workflowDir, spec.config);
 
   if (dryRun) {
@@ -132,7 +162,7 @@ export function runDeployCli(argv = process.argv.slice(2), env = process.env) {
 
   execFileSync(
     'wrangler',
-    buildDeployArgs(configPath, String(env.GITHUB_APP_ID).trim()),
+    buildDeployArgs(configPath, validated.githubAppId),
     { cwd: workflowDir, env: { ...env, CLOUDFLARE_ACCOUNT_ID: accountId }, stdio: 'inherit' }
   );
 }

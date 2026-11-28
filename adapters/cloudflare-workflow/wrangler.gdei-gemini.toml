@@ -1,0 +1,23 @@
+name = "gdei-gemini-pr-reviewer"
+main = "worker.mjs"
+compatibility_date = "2026-01-01"
+
+[vars]
+AI_REVIEW_PROVIDER = "gemini"
+AI_REVIEW_PROVIDER_ROLE = "secondary"
+GEMINI_MODEL = "gemini-3.8-flash"
+REVIEWER_LOGIN = "gdei-gemini-reviewer[bot]"
+TRUSTED_REVIEWERS_JSON = '{"gdei-ai-reviewer[bot]":["deepseek"]}'
+CODEX_PROBE_MINUTES = "2"
+FALLBACK_WAIT_MINUTES = "12"
+SECONDARY_GRACE_MINUTES = "3"
+REVIEW_MENTION_HANDLE = "@gdei-gemini-reviewer review"
+
+[[kv_namespaces]]
+binding = "ROUTE_STATE_KV"
+id = "1ec69db20d9347cda77ada2c5adb1585"
+
+[[workflows]]
+name = "gdei-gemini-pr-review-workflow"
+binding = "PR_REVIEW_WORKFLOW"
+class_name = "PrReviewWorkflow"
