@@ -99,7 +99,11 @@ export async function getGcpAccessToken(saJson, fetchImpl = fetch, nowSec = Math
   const enc = new TextEncoder();
   const header = base64UrlEncode(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
   const tokenUri = sa.token_uri || 'https://oauth2.googleapis.com/token';
-  if (tokenUri !== 'https://oauth2.googleapis.com/token') {
+  const allowedTokenUris = new Set([
+    'https://oauth2.googleapis.com/token',
+    'https://accounts.google.com/o/oauth2/token',
+  ]);
+  if (!allowedTokenUris.has(tokenUri)) {
     throw new Error('Invalid GCP OAuth token URI');
   }
   const payload = base64UrlEncode(enc.encode(JSON.stringify({
@@ -130,8 +134,9 @@ export async function getGcpAccessToken(saJson, fetchImpl = fetch, nowSec = Math
         assertion,
       }).toString(),
     });
-  } catch {
-    const error = new Error('GCP OAuth token exchange failed');
+  } catch (cause) {
+    const safeCause = new Error(cause instanceof Error ? cause.name : 'UnknownError');
+    const error = new Error('GCP OAuth token exchange failed', { cause: safeCause });
     error.retryable = true;
     throw error;
   }

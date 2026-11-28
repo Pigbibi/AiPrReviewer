@@ -181,23 +181,31 @@ export async function runGeminiReview({
   const endpoint = useAgentPlatform
     ? `${base}/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(locationName)}/publishers/google/models/${encodeURIComponent(modelName)}:generateContent`
     : `${base}/models/${encodeURIComponent(modelName)}:generateContent`;
-  const res = await fetchImpl(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(useAgentPlatform
-        ? { Authorization: `Bearer ${accessToken}` }
-        : { 'x-goog-api-key': apiKey }),
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: messages.system }] },
-      contents: [{ role: 'user', parts: [{ text: messages.user }] }],
-      generationConfig: {
-        temperature: 0.1,
-        responseMimeType: 'application/json',
+  let res;
+  try {
+    res = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(useAgentPlatform
+          ? { Authorization: `Bearer ${accessToken}` }
+          : { 'x-goog-api-key': apiKey }),
       },
-    }),
-  });
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: messages.system }] },
+        contents: [{ role: 'user', parts: [{ text: messages.user }] }],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: 'application/json',
+        },
+      }),
+    });
+  } catch (cause) {
+    const safeCause = new Error(cause instanceof Error ? cause.name : 'UnknownError');
+    const error = new Error('Gemini API transport failed', { cause: safeCause });
+    error.retryable = true;
+    throw error;
+  }
   if (!res.ok) {
     const error = new Error(`Gemini API failed with HTTP ${res.status}`);
     error.status = res.status;
@@ -320,7 +328,7 @@ export async function executeReviewWithFallback(
         const verdict = await runGeminiReview({
           apiKey: env.GEMINI_API_KEY,
           accessToken: token?.accessToken,
-          baseUrl: primaryAgentCall ? env.GEMINI_AGENT_BASE_URL : env.GEMINI_BASE_URL,
+          baseUrl: primaryAgentCall ? undefined : env.GEMINI_BASE_URL,
           model: selectedModel,
           messages,
           projectId: primaryAgentCall ? projectId : undefined,

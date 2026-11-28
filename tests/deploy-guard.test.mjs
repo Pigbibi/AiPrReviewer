@@ -125,6 +125,15 @@ test('Gemini secondary targets require an independent App ID and both Gemini sec
   assert.throws(
     () => validateDeployPreconditions({
       target: 'qsl-gemini',
+      env: { ...baseEnv, QSL_GEMINI_AGENT_PROJECT_ID: 'bad:project\nvalue' },
+      secretNames: [...baseSecrets, 'GEMINI_API_KEY', 'GEMINI_AGENT_SERVICE_ACCOUNT_JSON'],
+    }),
+    /invalid GCP project ID/
+  );
+
+  assert.throws(
+    () => validateDeployPreconditions({
+      target: 'qsl-gemini',
       env: { ...baseEnv, QSL_GEMINI_GITHUB_APP_ID: '' },
       secretNames: [...baseSecrets, 'GEMINI_API_KEY', 'GEMINI_AGENT_SERVICE_ACCOUNT_JSON'],
     }),

@@ -91,6 +91,15 @@ export function validateDeployPreconditions({
     );
   }
 
+  const agentProjectId = spec.agentProjectIdEnv
+    ? String(env[spec.agentProjectIdEnv] || '').trim()
+    : '';
+  if (agentProjectId && !/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(agentProjectId)) {
+    throw new Error(
+      `Refusing deploy of ${spec.worker}: ${spec.agentProjectIdEnv} has an invalid GCP project ID`
+    );
+  }
+
   if (!allowBootstrap) {
     const missingVariables = [spec.githubAppIdEnv, spec.agentProjectIdEnv]
       .filter(Boolean)
@@ -119,9 +128,7 @@ export function validateDeployPreconditions({
   return {
     ...spec,
     githubAppId: String(env[spec.githubAppIdEnv] || '').trim(),
-    agentProjectId: spec.agentProjectIdEnv
-      ? String(env[spec.agentProjectIdEnv] || '').trim()
-      : '',
+    agentProjectId,
   };
 }
 
