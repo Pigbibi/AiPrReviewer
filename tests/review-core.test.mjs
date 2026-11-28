@@ -458,6 +458,27 @@ test('Gemini reviewer falls back across stable models only for transient failure
     /Gemini API failed with HTTP 402/
   );
   assert.equal(billingCalls, 1);
+
+  let invalidContentCalls = 0;
+  await assert.rejects(
+    () => executeReviewWithFallback(
+      {
+        env: {
+          AI_REVIEW_PROVIDER: 'gemini',
+          GEMINI_API_KEY: 'gemini-synthetic',
+          GEMINI_MODEL: 'gemini-3.8-flash',
+          GEMINI_FALLBACK_MODELS: 'gemini-3.7-flash',
+        },
+        messages,
+      },
+      async () => {
+        invalidContentCalls += 1;
+        return { ok: true, json: async () => ({ candidates: [] }) };
+      }
+    ),
+    /Gemini API returned no review content/
+  );
+  assert.equal(invalidContentCalls, 1);
 });
 
 test('shouldSkipPrState and planPullRequestWebhook support mention-triggered drafts while skipping auto drafts', () => {

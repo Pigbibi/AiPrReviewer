@@ -156,21 +156,28 @@ export async function runGeminiReview({ apiKey, baseUrl, model, messages }, fetc
   const modelName = model || 'gemini-3.8-flash';
   const base = String(baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
   const endpoint = `${base}/models/${encodeURIComponent(modelName)}:generateContent`;
-  const res = await fetchImpl(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey,
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: messages.system }] },
-      contents: [{ role: 'user', parts: [{ text: messages.user }] }],
-      generationConfig: {
-        temperature: 0.1,
-        responseMimeType: 'application/json',
+  let res;
+  try {
+    res = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
       },
-    }),
-  });
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: messages.system }] },
+        contents: [{ role: 'user', parts: [{ text: messages.user }] }],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: 'application/json',
+        },
+      }),
+    });
+  } catch (cause) {
+    const error = new Error('Gemini API transport failed', { cause });
+    error.isTransportError = true;
+    throw error;
+  }
   if (!res.ok) {
     const error = new Error(`Gemini API failed with HTTP ${res.status}`);
     error.status = res.status;
@@ -277,7 +284,7 @@ export async function executeReviewWithFallback({ env, messages }, fetchImpl = f
       } catch (error) {
         lastError = error;
         const hasFallback = index < models.length - 1;
-        const retryable = error?.status == null || transientStatuses.has(error.status);
+        const retryable = error?.isTransportError === true || transientStatuses.has(error?.status);
         if (!hasFallback || !retryable) throw error;
       }
     }
