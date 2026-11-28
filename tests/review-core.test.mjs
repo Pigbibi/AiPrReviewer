@@ -417,8 +417,8 @@ test('Gemini retries 429 and 503 with the configured fallback model only', async
       return calls.length === 1 ? { ok: false, status } : ok('Fallback OK');
     });
     assert.equal(calls.length, 2);
-    assert.match(calls[0], /gemini-3\\.8-flash:generateContent/);
-    assert.match(calls[1], /gemini-3\\.5-flash-lite:generateContent/);
+    assert.match(calls[0], /gemini-3\.8-flash:generateContent/);
+    assert.match(calls[1], /gemini-3\.5-flash-lite:generateContent/);
     assert.equal(result.model, 'gemini-3.5-flash-lite');
     assert.equal(result.verdict.summary, 'Fallback OK');
   }
