@@ -531,6 +531,43 @@ test('Gemini uses Agent Platform Neon first, then both AI Studio fallbacks', asy
   assert.equal(result.verdict.summary, 'lite');
 });
 
+test('Gemini preserves a same-model AI Studio fallback after Agent Platform throttling', async () => {
+  const calls = [];
+  let tokenCalls = 0;
+  const result = await executeReviewWithFallback({
+    env: {
+      AI_REVIEW_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'studio-key',
+      GEMINI_MODEL: 'gemini-3.8-flash',
+      GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+      GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+    },
+    messages: { system: 'review', user: 'diff' },
+    getGcpToken: async () => {
+      tokenCalls += 1;
+      return { accessToken: 'short-lived-token', projectId: 'reviewer-project' };
+    },
+  }, async (url, options) => {
+    calls.push({ url, headers: options.headers });
+    if (calls.length === 1) return { ok: false, status: 429 };
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"Studio fallback","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+
+  assert.equal(tokenCalls, 1);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url, /aiplatform\.googleapis\.com.*gemini-3\.8-flash/);
+  assert.equal(calls[0].headers.Authorization, 'Bearer short-lived-token');
+  assert.match(calls[1].url, /generativelanguage\.googleapis\.com.*gemini-3\.8-flash/);
+  assert.equal(calls[1].headers['x-goog-api-key'], 'studio-key');
+  assert.equal(result.model, 'gemini-3.8-flash');
+  assert.equal(result.verdict.summary, 'Studio fallback');
+});
+
 test('Gemini fails closed when only half of Agent Platform identity is configured', async () => {
   await assert.rejects(
     () => executeReviewWithFallback({

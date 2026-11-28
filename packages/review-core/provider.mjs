@@ -296,15 +296,19 @@ export async function executeReviewWithFallback(
       throw new Error('Agent Platform requires GEMINI_AGENT_PROJECT_ID and GEMINI_AGENT_SERVICE_ACCOUNT_JSON');
     }
     const agentPlatformConfigured = Boolean(projectId && serviceAccountJson);
+    const studioCandidates = [model, ...fallbackModels]
+      .map(selectedModel => ({ model: selectedModel, useAgentPlatform: false }));
     const candidates = (agentPlatformConfigured
-      ? [agentModel, model, ...fallbackModels]
-      : [model, ...fallbackModels])
-      .filter((value, index, values) => value && values.indexOf(value) === index);
+      ? [{ model: agentModel, useAgentPlatform: true }, ...studioCandidates]
+      : studioCandidates)
+      .filter((candidate, index, values) => values.findIndex(value => (
+        value.model === candidate.model
+        && value.useAgentPlatform === candidate.useAgentPlatform
+      )) === index);
 
     for (let index = 0; index < candidates.length; index += 1) {
-      const selectedModel = candidates[index];
+      const { model: selectedModel, useAgentPlatform: primaryAgentCall } = candidates[index];
       try {
-        const primaryAgentCall = index === 0 && agentPlatformConfigured;
         const token = primaryAgentCall
           ? await getGcpToken(serviceAccountJson, fetchImpl)
           : undefined;
