@@ -8,8 +8,15 @@ import {
 
 test('deploy preserves dashboard-managed runtime variables', () => {
   assert.deepEqual(
-    buildDeployArgs('/tmp/wrangler.toml'),
-    ['deploy', '-c', '/tmp/wrangler.toml', '--keep-vars']
+    buildDeployArgs('/tmp/wrangler.toml', '1234567'),
+    [
+      'deploy',
+      '-c',
+      '/tmp/wrangler.toml',
+      '--keep-vars',
+      '--var',
+      'GITHUB_APP_ID:1234567',
+    ]
   );
 });
 
