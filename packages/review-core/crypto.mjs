@@ -87,7 +87,12 @@ export async function createAppJwt(appId, privateKeyPem, nowSec = Math.floor(Dat
 }
 
 export async function getGcpAccessToken(saJson, fetchImpl = fetch, nowSec = Math.floor(Date.now() / 1000)) {
-  const sa = typeof saJson === 'string' ? JSON.parse(saJson) : saJson;
+  let sa;
+  try {
+    sa = typeof saJson === 'string' ? JSON.parse(saJson) : saJson;
+  } catch {
+    throw new Error('Invalid GCP service account JSON');
+  }
   if (!sa?.client_email || !sa?.private_key) {
     throw new Error('Invalid GCP service account JSON');
   }
@@ -127,3 +132,4 @@ export async function getGcpAccessToken(saJson, fetchImpl = fetch, nowSec = Math
   if (!data?.access_token) throw new Error('Missing access_token in GCP OAuth response');
   return { accessToken: data.access_token, projectId: sa.project_id || '' };
 }
+

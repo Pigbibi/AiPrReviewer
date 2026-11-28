@@ -197,6 +197,18 @@ test('getGcpAccessToken exchanges signed RS256 assertion for OAuth2 token', asyn
   assert.match(capturedBody, /grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer/);
 });
 
+test('getGcpAccessToken rejects malformed JSON without exposing credential contents', async () => {
+  const credentialFragment = 'PRIVATE-KEY-MATERIAL-MUST-NOT-LEAK';
+  await assert.rejects(
+    () => getGcpAccessToken(`{"private_key":"${credentialFragment}`),
+    error => {
+      assert.equal(error.message, 'Invalid GCP service account JSON');
+      assert.doesNotMatch(error.message, new RegExp(credentialFragment));
+      return true;
+    }
+  );
+});
+
 test('fetchPrContext paginates the complete changed-file list and rejects incomplete coverage', async () => {
   const files = Array.from({ length: 101 }, (_, i) => ({ filename: `src/f${i}.js` }));
   const response = value => ({ ok: true, json: async () => value });
@@ -519,6 +531,51 @@ test('Gemini rejects a service account from the wrong Agent Platform project', a
       getGcpToken: async () => ({ accessToken: 'token', projectId: 'other-project' }),
     }),
     /service account project does not match/
+  );
+});
+
+test('Gemini rejects an Agent Platform service account with no project identity before inference', async () => {
+  let inferenceCalls = 0;
+  await assert.rejects(
+    () => executeReviewWithFallback({
+      env: {
+        AI_REVIEW_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'studio-key',
+        GEMINI_MODEL: 'gemini-4-neon',
+        GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+        GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+      },
+      messages: { system: 'review', user: 'diff' },
+      getGcpToken: async () => ({ accessToken: 'token', projectId: '' }),
+    }, async () => {
+      inferenceCalls += 1;
+      throw new Error('inference must not run');
+    }),
+    /service account project does not match/
+  );
+  assert.equal(inferenceCalls, 0);
+});
+
+test('Gemini derives the regional Agent Platform host from location', async () => {
+  let requestedUrl = '';
+  await runGeminiReview({
+    accessToken: 'token',
+    projectId: 'reviewer-project',
+    location: 'us-central1',
+    model: 'gemini-4-neon',
+    messages: { system: 'review', user: 'diff' },
+  }, async url => {
+    requestedUrl = url;
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"OK","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+  assert.equal(
+    requestedUrl,
+    'https://us-central1-aiplatform.googleapis.com/v1/projects/reviewer-project/locations/us-central1/publishers/google/models/gemini-4-neon:generateContent'
   );
 });
 

@@ -163,16 +163,23 @@ export async function runGeminiReview({
   location = 'global',
 }, fetchImpl = fetch) {
   const modelName = model || 'gemini-3.8-flash';
+  const locationName = String(location || 'global').trim() || 'global';
   const useAgentPlatform = Boolean(projectId || accessToken);
   if (useAgentPlatform && (!projectId || !accessToken)) {
     throw new Error('Agent Platform requires project ID and access token');
   }
   if (!useAgentPlatform && !apiKey) throw new Error('Missing GEMINI_API_KEY');
-  const base = String(baseUrl || (useAgentPlatform
+  if (useAgentPlatform && !/^[a-z0-9-]+$/.test(locationName)) {
+    throw new Error('Invalid Agent Platform location');
+  }
+  const agentPlatformBase = locationName === 'global'
     ? 'https://aiplatform.googleapis.com/v1'
+    : `https://${locationName}-aiplatform.googleapis.com/v1`;
+  const base = String(baseUrl || (useAgentPlatform
+    ? agentPlatformBase
     : 'https://generativelanguage.googleapis.com/v1beta')).replace(/\/+$/, '');
   const endpoint = useAgentPlatform
-    ? `${base}/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/publishers/google/models/${encodeURIComponent(modelName)}:generateContent`
+    ? `${base}/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(locationName)}/publishers/google/models/${encodeURIComponent(modelName)}:generateContent`
     : `${base}/models/${encodeURIComponent(modelName)}:generateContent`;
   const res = await fetchImpl(endpoint, {
     method: 'POST',
@@ -296,7 +303,7 @@ export async function executeReviewWithFallback(
         const token = primaryAgentCall
           ? await getGcpToken(serviceAccountJson, fetchImpl)
           : undefined;
-        if (primaryAgentCall && token?.projectId && token.projectId !== projectId) {
+        if (primaryAgentCall && token?.projectId !== projectId) {
           throw new Error('Agent Platform service account project does not match GEMINI_AGENT_PROJECT_ID');
         }
         const verdict = await runGeminiReview({
