@@ -407,6 +407,59 @@ test('runGeminiReview parses structured output and fails closed on HTTP errors',
   );
 });
 
+test('Gemini reviewer falls back across stable models only for transient failures', async () => {
+  const messages = { system: 'strict reviewer', user: 'diff' };
+  const calls = [];
+  const result = await executeReviewWithFallback(
+    {
+      env: {
+        AI_REVIEW_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'gemini-synthetic',
+        GEMINI_MODEL: 'gemini-3.8-flash',
+        GEMINI_FALLBACK_MODELS: 'gemini-3.7-flash, gemini-3.6-flash, gemini-3.5-flash-lite',
+      },
+      messages,
+    },
+    async url => {
+      calls.push(url);
+      if (calls.length === 1) return { ok: false, status: 503 };
+      if (calls.length === 2) return { ok: false, status: 524 };
+      return {
+        ok: true,
+        json: async () => ({ candidates: [{ content: { parts: [{ text: '{"summary":"fallback ok","unresolved_findings":false,"findings":[]}' }] } }] }),
+      };
+    }
+  );
+  assert.deepEqual(calls.map(url => url.match(/models\/([^:]+):/)[1]), [
+    'gemini-3.8-flash',
+    'gemini-3.7-flash',
+    'gemini-3.6-flash',
+  ]);
+  assert.equal(result.model, 'gemini-3.6-flash');
+  assert.equal(result.verdict.summary, 'fallback ok');
+
+  let billingCalls = 0;
+  await assert.rejects(
+    () => executeReviewWithFallback(
+      {
+        env: {
+          AI_REVIEW_PROVIDER: 'gemini',
+          GEMINI_API_KEY: 'gemini-synthetic',
+          GEMINI_MODEL: 'gemini-3.8-flash',
+          GEMINI_FALLBACK_MODELS: 'gemini-3.7-flash',
+        },
+        messages,
+      },
+      async () => {
+        billingCalls += 1;
+        return { ok: false, status: 402 };
+      }
+    ),
+    /Gemini API failed with HTTP 402/
+  );
+  assert.equal(billingCalls, 1);
+});
+
 test('shouldSkipPrState and planPullRequestWebhook support mention-triggered drafts while skipping auto drafts', () => {
   assert.equal(shouldSkipPrState({ state: 'open', draft: false }), false);
   assert.equal(shouldSkipPrState({ state: 'open', draft: true }), true);

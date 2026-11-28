@@ -6,6 +6,7 @@ compatibility_date = "2026-01-01"
 AI_REVIEW_PROVIDER = "gemini"
 AI_REVIEW_PROVIDER_ROLE = "secondary"
 GEMINI_MODEL = "gemini-3.8-flash"
+GEMINI_FALLBACK_MODELS = "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite"
 REVIEWER_LOGIN = "gdei-gemini-reviewer[bot]"
 TRUSTED_REVIEWERS_JSON = '{"gdei-ai-reviewer[bot]":["deepseek"]}'
 CODEX_PROBE_MINUTES = "2"

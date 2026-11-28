@@ -171,7 +171,11 @@ export async function runGeminiReview({ apiKey, baseUrl, model, messages }, fetc
       },
     }),
   });
-  if (!res.ok) throw new Error(`Gemini API failed with HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(`Gemini API failed with HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
   const data = await res.json();
   const raw = data?.candidates?.[0]?.content?.parts
     ?.map(part => typeof part?.text === 'string' ? part.text : '')
@@ -250,14 +254,34 @@ export function mergeBatchVerdicts(batchResults) {
 export async function executeReviewWithFallback({ env, messages }, fetchImpl = fetch) {
   const provider = String(env.AI_REVIEW_PROVIDER || 'deepseek').trim().toLowerCase();
   if (provider === 'gemini') {
-    const model = env.GEMINI_MODEL || 'gemini-3.8-flash';
-    const verdict = await runGeminiReview({
-      apiKey: env.GEMINI_API_KEY,
-      baseUrl: env.GEMINI_BASE_URL,
-      model,
-      messages,
-    }, fetchImpl);
-    return { verdict, provider, model };
+    const primaryModel = String(env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+    const fallbackModels = String(
+      env.GEMINI_FALLBACK_MODELS || 'gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite'
+    )
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean);
+    const models = [...new Set([primaryModel, ...fallbackModels])];
+    const transientStatuses = new Set([408, 429, 500, 502, 503, 504, 524]);
+    let lastError;
+    for (let index = 0; index < models.length; index++) {
+      const model = models[index];
+      try {
+        const verdict = await runGeminiReview({
+          apiKey: env.GEMINI_API_KEY,
+          baseUrl: env.GEMINI_BASE_URL,
+          model,
+          messages,
+        }, fetchImpl);
+        return { verdict, provider, model };
+      } catch (error) {
+        lastError = error;
+        const hasFallback = index < models.length - 1;
+        const retryable = error?.status == null || transientStatuses.has(error.status);
+        if (!hasFallback || !retryable) throw error;
+      }
+    }
+    throw lastError;
   }
   if (provider !== 'deepseek') throw new Error(`Unsupported API review provider: ${provider}`);
   if (!env.DEEPSEEK_API_KEY) throw new Error('No DeepSeek review credentials configured');
