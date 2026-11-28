@@ -99,6 +99,9 @@ export async function getGcpAccessToken(saJson, fetchImpl = fetch, nowSec = Math
   const enc = new TextEncoder();
   const header = base64UrlEncode(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
   const tokenUri = sa.token_uri || 'https://oauth2.googleapis.com/token';
+  if (tokenUri !== 'https://oauth2.googleapis.com/token') {
+    throw new Error('Invalid GCP OAuth token URI');
+  }
   const payload = base64UrlEncode(enc.encode(JSON.stringify({
     iss: sa.client_email,
     scope: 'https://www.googleapis.com/auth/cloud-platform',

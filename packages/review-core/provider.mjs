@@ -284,7 +284,7 @@ export async function executeReviewWithFallback(
 ) {
   const provider = String(env.AI_REVIEW_PROVIDER || 'deepseek').trim().toLowerCase();
   if (provider === 'gemini') {
-    const model = String(env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+    const model = String(env.GEMINI_MODEL || '').trim() || 'gemini-3.8-flash';
     const agentModel = String(env.GEMINI_AGENT_MODEL || '').trim();
     const fallbackModels = [
       String(env.GEMINI_FALLBACK_MODEL || '').trim(),

@@ -213,6 +213,16 @@ test('getGcpAccessToken exchanges signed RS256 assertion for OAuth2 token', asyn
       return true;
     }
   );
+
+  let invalidTokenUriFetches = 0;
+  await assert.rejects(
+    () => getGcpAccessToken({ ...sa, token_uri: 'not-a-valid-oauth-url' }, async () => {
+      invalidTokenUriFetches += 1;
+      return { ok: true, json: async () => ({ access_token: 'must-not-be-used' }) };
+    }, 1700000000),
+    /Invalid GCP OAuth token URI/
+  );
+  assert.equal(invalidTokenUriFetches, 0);
 });
 
 test('getGcpAccessToken rejects malformed JSON without exposing credential contents', async () => {
@@ -614,6 +624,78 @@ test('Gemini falls back to AI Studio when Agent Platform token acquisition is re
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /generativelanguage\.googleapis\.com.*gemini-3\.8-flash/);
+  assert.equal(result.model, 'gemini-3.8-flash');
+});
+
+test('Gemini fails closed on non-retryable Agent Platform token errors', async () => {
+  for (const status of [401, 403]) {
+    let studioCalls = 0;
+    const tokenError = new Error('auth failure');
+    tokenError.status = status;
+    await assert.rejects(
+      () => executeReviewWithFallback({
+        env: {
+          AI_REVIEW_PROVIDER: 'gemini',
+          GEMINI_API_KEY: 'studio-key',
+          GEMINI_AGENT_MODEL: 'gemini-4-neon',
+          GEMINI_MODEL: 'gemini-3.8-flash',
+          GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+          GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+        },
+        messages: { system: 'review', user: 'diff' },
+        getGcpToken: async () => { throw tokenError; },
+      }, async () => {
+        studioCalls += 1;
+        throw new Error('studio must not run');
+      }),
+      error => error === tokenError
+    );
+    assert.equal(studioCalls, 0);
+  }
+});
+
+test('Gemini fails closed on non-retryable Agent Platform inference errors', async () => {
+  for (const status of [401, 403]) {
+    let inferenceCalls = 0;
+    await assert.rejects(
+      () => executeReviewWithFallback({
+        env: {
+          AI_REVIEW_PROVIDER: 'gemini',
+          GEMINI_API_KEY: 'studio-key',
+          GEMINI_AGENT_MODEL: 'gemini-4-neon',
+          GEMINI_MODEL: 'gemini-3.8-flash',
+          GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+          GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+        },
+        messages: { system: 'review', user: 'diff' },
+        getGcpToken: async () => ({ accessToken: 'token', projectId: 'reviewer-project' }),
+      }, async () => {
+        inferenceCalls += 1;
+        return { ok: false, status };
+      }),
+      error => error?.status === status
+    );
+    assert.equal(inferenceCalls, 1);
+  }
+});
+
+test('Gemini normalizes a blank Studio model to its effective default', async () => {
+  const result = await executeReviewWithFallback({
+    env: {
+      AI_REVIEW_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'studio-key',
+      GEMINI_MODEL: '   ',
+    },
+    messages: { system: 'review', user: 'diff' },
+  }, async url => {
+    assert.match(url, /gemini-3\.8-flash/);
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"default","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
   assert.equal(result.model, 'gemini-3.8-flash');
 });
 
