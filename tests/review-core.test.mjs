@@ -391,6 +391,57 @@ test('executeReviewWithFallback selects DeepSeek or Gemini without mixing provid
   assert.equal(geminiOk.model, 'gemini-3.8-flash');
 });
 
+test('Gemini retries 429 and 503 with the configured fallback model only', async () => {
+  const messages = { system: 'strict reviewer', user: 'diff' };
+  const ok = summary => ({
+    ok: true,
+    json: async () => ({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({
+        summary, unresolved_findings: false, findings: [],
+      }) }] } }],
+    }),
+  });
+
+  for (const status of [429, 503]) {
+    const calls = [];
+    const result = await executeReviewWithFallback({
+      env: {
+        AI_REVIEW_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'gemini-synthetic',
+        GEMINI_MODEL: 'gemini-3.8-flash',
+        GEMINI_FALLBACK_MODEL: 'gemini-3.5-flash-lite',
+      },
+      messages,
+    }, async url => {
+      calls.push(url);
+      return calls.length === 1 ? { ok: false, status } : ok('Fallback OK');
+    });
+    assert.equal(calls.length, 2);
+    assert.match(calls[0], /gemini-3\.8-flash:generateContent/);
+    assert.match(calls[1], /gemini-3\.5-flash-lite:generateContent/);
+    assert.equal(result.model, 'gemini-3.5-flash-lite');
+    assert.equal(result.verdict.summary, 'Fallback OK');
+  }
+
+  let nonRetryableCalls = 0;
+  await assert.rejects(
+    () => executeReviewWithFallback({
+      env: {
+        AI_REVIEW_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'gemini-synthetic',
+        GEMINI_MODEL: 'gemini-3.8-flash',
+        GEMINI_FALLBACK_MODEL: 'gemini-3.5-flash-lite',
+      },
+      messages,
+    }, async () => {
+      nonRetryableCalls += 1;
+      return { ok: false, status: 401 };
+    }),
+    /Gemini API failed with HTTP 401/
+  );
+  assert.equal(nonRetryableCalls, 1);
+});
+
 test('runGeminiReview parses structured output and fails closed on HTTP errors', async () => {
   const messages = { system: 'strict reviewer', user: 'diff' };
   const verdict = await runGeminiReview(

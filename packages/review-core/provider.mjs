@@ -171,7 +171,11 @@ export async function runGeminiReview({ apiKey, baseUrl, model, messages }, fetc
       },
     }),
   });
-  if (!res.ok) throw new Error(`Gemini API failed with HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(`Gemini API failed with HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
   const data = await res.json();
   const raw = data?.candidates?.[0]?.content?.parts
     ?.map(part => typeof part?.text === 'string' ? part.text : '')
@@ -251,13 +255,22 @@ export async function executeReviewWithFallback({ env, messages }, fetchImpl = f
   const provider = String(env.AI_REVIEW_PROVIDER || 'deepseek').trim().toLowerCase();
   if (provider === 'gemini') {
     const model = env.GEMINI_MODEL || 'gemini-3.8-flash';
-    const verdict = await runGeminiReview({
+    const fallbackModel = String(env.GEMINI_FALLBACK_MODEL || '').trim();
+    const review = selectedModel => runGeminiReview({
       apiKey: env.GEMINI_API_KEY,
       baseUrl: env.GEMINI_BASE_URL,
-      model,
+      model: selectedModel,
       messages,
     }, fetchImpl);
-    return { verdict, provider, model };
+    try {
+      const verdict = await review(model);
+      return { verdict, provider, model };
+    } catch (error) {
+      const retryable = error?.status === 429 || error?.status === 503;
+      if (!retryable || !fallbackModel || fallbackModel === model) throw error;
+      const verdict = await review(fallbackModel);
+      return { verdict, provider, model: fallbackModel };
+    }
   }
   if (provider !== 'deepseek') throw new Error(`Unsupported API review provider: ${provider}`);
   if (!env.DEEPSEEK_API_KEY) throw new Error('No DeepSeek review credentials configured');
