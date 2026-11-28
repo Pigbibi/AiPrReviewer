@@ -83,8 +83,15 @@ export function validateDeployPreconditions({
   return spec;
 }
 
-export function buildDeployArgs(configPath) {
-  return ['deploy', '-c', configPath, '--keep-vars'];
+export function buildDeployArgs(configPath, githubAppId) {
+  return [
+    'deploy',
+    '-c',
+    configPath,
+    '--keep-vars',
+    '--var',
+    `GITHUB_APP_ID:${githubAppId}`,
+  ];
 }
 
 export function runDeployCli(argv = process.argv.slice(2), env = process.env) {
@@ -125,7 +132,7 @@ export function runDeployCli(argv = process.argv.slice(2), env = process.env) {
 
   execFileSync(
     'wrangler',
-    buildDeployArgs(configPath),
+    buildDeployArgs(configPath, String(env.GITHUB_APP_ID).trim()),
     { cwd: workflowDir, env: { ...env, CLOUDFLARE_ACCOUNT_ID: accountId }, stdio: 'inherit' }
   );
 }
