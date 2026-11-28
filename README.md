@@ -21,10 +21,9 @@ For high-risk changes, each organization has a separate Gemini secondary deploym
 [vars]
 AI_REVIEW_PROVIDER = "gemini"
 AI_REVIEW_PROVIDER_ROLE = "secondary"
-GEMINI_MODEL = "gemini-4-neon"
-GEMINI_FALLBACK_MODEL = "gemini-3.8-flash"
-GEMINI_SECOND_FALLBACK_MODEL = "gemini-3.5-flash-lite"
-GEMINI_AGENT_PROJECT_ID = "gen-lang-client-0716076000"
+GEMINI_AGENT_MODEL = "gemini-4-neon"
+GEMINI_MODEL = "gemini-3.8-flash"
+GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 GEMINI_AGENT_LOCATION = "global"
 SECONDARY_GRACE_MINUTES = "3"
 REVIEWER_LOGIN = "qsl-gemini-reviewer[bot]"
@@ -37,6 +36,8 @@ wrangler secret put GEMINI_AGENT_SERVICE_ACCOUNT_JSON -c wrangler.qsl-gemini.tom
 ```
 
 The deploy guard exposes the targets `qsl-gemini`, `gdei-gemini`, and `pigbibi-gemini`. Each target requires its own GitHub App ID variable (`QSL_GEMINI_GITHUB_APP_ID`, `GDEI_GEMINI_GITHUB_APP_ID`, or `PIGBIBI_GEMINI_GITHUB_APP_ID`), App private key, webhook secret, AI Studio fallback key, and Agent Platform service-account JSON. The service account must belong to the configured project and have only the Agent Platform inference role needed for `generateContent`; a cross-project credential is rejected before inference. Primary and secondary deployments trust only the explicitly named counterpart App.
+
+The real Google Cloud project IDs are not committed. Provide the matching deployment-only variable (`QSL_GEMINI_AGENT_PROJECT_ID`, `GDEI_GEMINI_AGENT_PROJECT_ID`, or `PIGBIBI_GEMINI_AGENT_PROJECT_ID`) when running the deploy guard; it injects the runtime `GEMINI_AGENT_PROJECT_ID` value after validating that it is present.
 
 The secondary reviewer must be a separate GitHub App identity. Two models posting through the same bot login do not count as independent reviewers in PrGovernance v4. Configure each deployment's `TRUSTED_REVIEWERS_JSON` with only the other reviewer Apps that are allowed to attest a provider.
 

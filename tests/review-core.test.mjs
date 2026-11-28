@@ -454,6 +454,34 @@ test('Gemini retries 429 and 503 with the configured fallback model only', async
   assert.equal(nonRetryableCalls, 1);
 });
 
+test('Gemini without Agent Platform starts with the first AI Studio fallback', async () => {
+  const calls = [];
+  const result = await executeReviewWithFallback({
+    env: {
+      AI_REVIEW_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'studio-key',
+      GEMINI_AGENT_MODEL: 'gemini-4-neon',
+      GEMINI_MODEL: 'gemini-3.8-flash',
+      GEMINI_FALLBACK_MODEL: 'gemini-3.5-flash-lite',
+    },
+    messages: { system: 'review', user: 'diff' },
+  }, async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"Studio OK","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /gemini-3\.8-flash:generateContent/);
+  assert.doesNotMatch(calls[0].url, /gemini-4-neon/);
+  assert.equal(calls[0].body.generationConfig.temperature, 0.1);
+  assert.equal(result.model, 'gemini-3.8-flash');
+});
+
 test('Gemini uses Agent Platform Neon first, then both AI Studio fallbacks', async () => {
   const calls = [];
   let tokenCalls = 0;
@@ -469,9 +497,9 @@ test('Gemini uses Agent Platform Neon first, then both AI Studio fallbacks', asy
     env: {
       AI_REVIEW_PROVIDER: 'gemini',
       GEMINI_API_KEY: 'studio-key',
-      GEMINI_MODEL: 'gemini-4-neon',
-      GEMINI_FALLBACK_MODEL: 'gemini-3.8-flash',
-      GEMINI_SECOND_FALLBACK_MODEL: 'gemini-3.5-flash-lite',
+      GEMINI_AGENT_MODEL: 'gemini-4-neon',
+      GEMINI_MODEL: 'gemini-3.8-flash',
+      GEMINI_FALLBACK_MODEL: 'gemini-3.5-flash-lite',
       GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
       GEMINI_AGENT_LOCATION: 'global',
       GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
@@ -495,6 +523,7 @@ test('Gemini uses Agent Platform Neon first, then both AI Studio fallbacks', asy
   );
   assert.equal(calls[0].options.headers.Authorization, 'Bearer short-lived-token');
   assert.equal(calls[0].options.headers['x-goog-api-key'], undefined);
+  assert.equal(JSON.parse(calls[0].options.body).generationConfig.temperature, 0.1);
   assert.match(calls[1].url, /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-3\.8-flash/);
   assert.equal(calls[1].options.headers['x-goog-api-key'], 'studio-key');
   assert.match(calls[2].url, /gemini-3\.5-flash-lite:generateContent/);

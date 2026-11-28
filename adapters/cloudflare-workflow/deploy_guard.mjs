@@ -28,6 +28,7 @@ export const TARGET_WORKERS = Object.freeze({
     config: 'wrangler.qsl-gemini.toml',
     worker: 'qsl-gemini-pr-reviewer',
     githubAppIdEnv: 'QSL_GEMINI_GITHUB_APP_ID',
+    agentProjectIdEnv: 'QSL_GEMINI_AGENT_PROJECT_ID',
     expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_QSL_GEMINI',
     providerSecrets: ['GEMINI_API_KEY', 'GEMINI_AGENT_SERVICE_ACCOUNT_JSON'],
   }),
@@ -35,6 +36,7 @@ export const TARGET_WORKERS = Object.freeze({
     config: 'wrangler.gdei-gemini.toml',
     worker: 'gdei-gemini-pr-reviewer',
     githubAppIdEnv: 'GDEI_GEMINI_GITHUB_APP_ID',
+    agentProjectIdEnv: 'GDEI_GEMINI_AGENT_PROJECT_ID',
     expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_GDEI_GEMINI',
     providerSecrets: ['GEMINI_API_KEY', 'GEMINI_AGENT_SERVICE_ACCOUNT_JSON'],
   }),
@@ -42,6 +44,7 @@ export const TARGET_WORKERS = Object.freeze({
     config: 'wrangler.pigbibi-gemini.toml',
     worker: 'pigbibi-gemini-pr-reviewer',
     githubAppIdEnv: 'PIGBIBI_GEMINI_GITHUB_APP_ID',
+    agentProjectIdEnv: 'PIGBIBI_GEMINI_AGENT_PROJECT_ID',
     expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_PIGBIBI_GEMINI',
     providerSecrets: ['GEMINI_API_KEY', 'GEMINI_AGENT_SERVICE_ACCOUNT_JSON'],
   }),
@@ -89,7 +92,9 @@ export function validateDeployPreconditions({
   }
 
   if (!allowBootstrap) {
-    const missingVariables = [spec.githubAppIdEnv].filter(name => !String(env[name] || '').trim());
+    const missingVariables = [spec.githubAppIdEnv, spec.agentProjectIdEnv]
+      .filter(Boolean)
+      .filter(name => !String(env[name] || '').trim());
     if (missingVariables.length) {
       throw new Error(
         `Refusing deploy of ${spec.worker} to account ${accountId}: missing required variables [${missingVariables.join(', ')}]`
@@ -111,11 +116,17 @@ export function validateDeployPreconditions({
     }
   }
 
-  return { ...spec, githubAppId: String(env[spec.githubAppIdEnv] || '').trim() };
+  return {
+    ...spec,
+    githubAppId: String(env[spec.githubAppIdEnv] || '').trim(),
+    agentProjectId: spec.agentProjectIdEnv
+      ? String(env[spec.agentProjectIdEnv] || '').trim()
+      : '',
+  };
 }
 
-export function buildDeployArgs(configPath, githubAppId) {
-  return [
+export function buildDeployArgs(configPath, githubAppId, agentProjectId = '') {
+  const args = [
     'deploy',
     '-c',
     configPath,
@@ -123,6 +134,10 @@ export function buildDeployArgs(configPath, githubAppId) {
     '--var',
     `GITHUB_APP_ID:${githubAppId}`,
   ];
+  if (agentProjectId) {
+    args.push('--var', `GEMINI_AGENT_PROJECT_ID:${agentProjectId}`);
+  }
+  return args;
 }
 
 export function runDeployCli(argv = process.argv.slice(2), env = process.env) {
@@ -163,7 +178,7 @@ export function runDeployCli(argv = process.argv.slice(2), env = process.env) {
 
   execFileSync(
     'wrangler',
-    buildDeployArgs(configPath, validated.githubAppId),
+    buildDeployArgs(configPath, validated.githubAppId, validated.agentProjectId),
     { cwd: workflowDir, env: { ...env, CLOUDFLARE_ACCOUNT_ID: accountId }, stdio: 'inherit' }
   );
 }

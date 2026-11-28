@@ -193,7 +193,7 @@ export async function runGeminiReview({
       systemInstruction: { parts: [{ text: messages.system }] },
       contents: [{ role: 'user', parts: [{ text: messages.user }] }],
       generationConfig: {
-        ...(!useAgentPlatform ? { temperature: 0.1 } : {}),
+        temperature: 0.1,
         responseMimeType: 'application/json',
       },
     }),
@@ -284,7 +284,8 @@ export async function executeReviewWithFallback(
 ) {
   const provider = String(env.AI_REVIEW_PROVIDER || 'deepseek').trim().toLowerCase();
   if (provider === 'gemini') {
-    const model = env.GEMINI_MODEL || 'gemini-3.8-flash';
+    const model = String(env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+    const agentModel = String(env.GEMINI_AGENT_MODEL || model).trim() || model;
     const fallbackModels = [
       String(env.GEMINI_FALLBACK_MODEL || '').trim(),
       String(env.GEMINI_SECOND_FALLBACK_MODEL || '').trim(),
@@ -294,12 +295,16 @@ export async function executeReviewWithFallback(
     if (Boolean(projectId) !== Boolean(serviceAccountJson)) {
       throw new Error('Agent Platform requires GEMINI_AGENT_PROJECT_ID and GEMINI_AGENT_SERVICE_ACCOUNT_JSON');
     }
-    const candidates = [model, ...fallbackModels];
+    const agentPlatformConfigured = Boolean(projectId && serviceAccountJson);
+    const candidates = (agentPlatformConfigured
+      ? [agentModel, model, ...fallbackModels]
+      : [model, ...fallbackModels])
+      .filter((value, index, values) => value && values.indexOf(value) === index);
 
     for (let index = 0; index < candidates.length; index += 1) {
       const selectedModel = candidates[index];
       try {
-        const primaryAgentCall = index === 0 && Boolean(projectId || serviceAccountJson);
+        const primaryAgentCall = index === 0 && agentPlatformConfigured;
         const token = primaryAgentCall
           ? await getGcpToken(serviceAccountJson, fetchImpl)
           : undefined;
