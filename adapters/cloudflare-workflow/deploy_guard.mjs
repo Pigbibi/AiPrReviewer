@@ -8,42 +8,42 @@ export const TARGET_WORKERS = Object.freeze({
     worker: 'qsl-pr-reviewer',
     githubAppIdEnv: 'GITHUB_APP_ID',
     expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_QSL',
-    providerSecret: 'DEEPSEEK_API_KEY',
+    providerSecrets: ['DEEPSEEK_API_KEY'],
   }),
   gdei: Object.freeze({
     config: 'wrangler.gdei.toml',
     worker: 'gdei-pr-reviewer',
     githubAppIdEnv: 'GITHUB_APP_ID',
     expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_GDEI',
-    providerSecret: 'DEEPSEEK_API_KEY',
+    providerSecrets: ['DEEPSEEK_API_KEY'],
   }),
   pigbibi: Object.freeze({
     config: 'wrangler.pigbibi.toml',
     worker: 'pigbibi-pr-reviewer',
     githubAppIdEnv: 'GITHUB_APP_ID',
     expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_PIGBIBI',
-    providerSecret: 'DEEPSEEK_API_KEY',
+    providerSecrets: ['DEEPSEEK_API_KEY'],
   }),
   'qsl-gemini': Object.freeze({
     config: 'wrangler.qsl-gemini.toml',
     worker: 'qsl-gemini-pr-reviewer',
     githubAppIdEnv: 'QSL_GEMINI_GITHUB_APP_ID',
     expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_QSL_GEMINI',
-    providerSecret: 'GEMINI_API_KEY',
+    providerSecrets: ['GEMINI_API_KEY', 'GEMINI_AGENT_SERVICE_ACCOUNT_JSON'],
   }),
   'gdei-gemini': Object.freeze({
     config: 'wrangler.gdei-gemini.toml',
     worker: 'gdei-gemini-pr-reviewer',
     githubAppIdEnv: 'GDEI_GEMINI_GITHUB_APP_ID',
     expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_GDEI_GEMINI',
-    providerSecret: 'GEMINI_API_KEY',
+    providerSecrets: ['GEMINI_API_KEY', 'GEMINI_AGENT_SERVICE_ACCOUNT_JSON'],
   }),
   'pigbibi-gemini': Object.freeze({
     config: 'wrangler.pigbibi-gemini.toml',
     worker: 'pigbibi-gemini-pr-reviewer',
     githubAppIdEnv: 'PIGBIBI_GEMINI_GITHUB_APP_ID',
     expectedAccountEnv: 'EXPECTED_CLOUDFLARE_ACCOUNT_ID_PIGBIBI_GEMINI',
-    providerSecret: 'GEMINI_API_KEY',
+    providerSecrets: ['GEMINI_API_KEY', 'GEMINI_AGENT_SERVICE_ACCOUNT_JSON'],
   }),
 });
 
@@ -103,9 +103,10 @@ export function validateDeployPreconditions({
         `Refusing deploy of ${spec.worker} to account ${accountId}: missing required secrets [${missingBase.join(', ')}] (pass --allow-bootstrap only for initial setup)`
       );
     }
-    if (!present.has(spec.providerSecret)) {
+    const missingProvider = spec.providerSecrets.filter(name => !present.has(name));
+    if (missingProvider.length) {
       throw new Error(
-        `Refusing deploy of ${spec.worker} to account ${accountId}: missing required provider secret [${spec.providerSecret}]`
+        `Refusing deploy of ${spec.worker} to account ${accountId}: missing required provider secrets [${missingProvider.join(', ')}]`
       );
     }
   }
@@ -171,4 +172,5 @@ const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv
 if (isMain) {
   runDeployCli();
 }
+
 

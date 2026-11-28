@@ -68,7 +68,7 @@ test('deploy guard enforces explicit account id, expected target match, and boun
       },
       secretNames: ['GITHUB_WEBHOOK_SECRET', 'GITHUB_APP_PRIVATE_KEY'],
     }),
-    /missing required provider secret \[DEEPSEEK_API_KEY\]/
+    /missing required provider secrets \[DEEPSEEK_API_KEY\]/
   );
 
   const spec = validateDeployPreconditions({
@@ -87,7 +87,7 @@ test('deploy guard enforces explicit account id, expected target match, and boun
   assert.equal(spec.config, 'wrangler.qsl.toml');
 });
 
-test('Gemini secondary targets require an independent App ID and Gemini secret', () => {
+test('Gemini secondary targets require an independent App ID and both Gemini secrets', () => {
   const baseEnv = {
     CLOUDFLARE_ACCOUNT_ID: '00000000000000000000000000000001',
     EXPECTED_CLOUDFLARE_ACCOUNT_ID_QSL_GEMINI: '00000000000000000000000000000001',
@@ -102,7 +102,7 @@ test('Gemini secondary targets require an independent App ID and Gemini secret',
     () => validateDeployPreconditions({
       target: 'qsl-gemini',
       env: { ...baseEnv, QSL_GEMINI_GITHUB_APP_ID: '' },
-      secretNames: [...baseSecrets, 'GEMINI_API_KEY'],
+      secretNames: [...baseSecrets, 'GEMINI_API_KEY', 'GEMINI_AGENT_SERVICE_ACCOUNT_JSON'],
     }),
     /missing required variables \[QSL_GEMINI_GITHUB_APP_ID\]/
   );
@@ -113,16 +113,26 @@ test('Gemini secondary targets require an independent App ID and Gemini secret',
       env: baseEnv,
       secretNames: [...baseSecrets, 'DEEPSEEK_API_KEY'],
     }),
-    /missing required provider secret \[GEMINI_API_KEY\]/
+    /missing required provider secrets \[GEMINI_API_KEY, GEMINI_AGENT_SERVICE_ACCOUNT_JSON\]/
+  );
+
+  assert.throws(
+    () => validateDeployPreconditions({
+      target: 'qsl-gemini',
+      env: baseEnv,
+      secretNames: [...baseSecrets, 'GEMINI_API_KEY'],
+    }),
+    /missing required provider secrets \[GEMINI_AGENT_SERVICE_ACCOUNT_JSON\]/
   );
 
   const spec = validateDeployPreconditions({
     target: 'qsl-gemini',
     env: baseEnv,
-    secretNames: [...baseSecrets, 'GEMINI_API_KEY'],
+    secretNames: [...baseSecrets, 'GEMINI_API_KEY', 'GEMINI_AGENT_SERVICE_ACCOUNT_JSON'],
   });
   assert.equal(spec.worker, 'qsl-gemini-pr-reviewer');
   assert.equal(spec.config, 'wrangler.qsl-gemini.toml');
   assert.equal(spec.githubAppId, '7654321');
 });
+
 

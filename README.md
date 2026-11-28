@@ -21,7 +21,11 @@ For high-risk changes, each organization has a separate Gemini secondary deploym
 [vars]
 AI_REVIEW_PROVIDER = "gemini"
 AI_REVIEW_PROVIDER_ROLE = "secondary"
-GEMINI_MODEL = "gemini-3.8-flash"
+GEMINI_MODEL = "gemini-4-neon"
+GEMINI_FALLBACK_MODEL = "gemini-3.8-flash"
+GEMINI_SECOND_FALLBACK_MODEL = "gemini-3.5-flash-lite"
+GEMINI_AGENT_PROJECT_ID = "gen-lang-client-0716076000"
+GEMINI_AGENT_LOCATION = "global"
 SECONDARY_GRACE_MINUTES = "3"
 REVIEWER_LOGIN = "qsl-gemini-reviewer[bot]"
 TRUSTED_REVIEWERS_JSON = '{"qsl-ai-reviewer[bot]":["deepseek"]}'
@@ -29,9 +33,10 @@ TRUSTED_REVIEWERS_JSON = '{"qsl-ai-reviewer[bot]":["deepseek"]}'
 
 ```sh
 wrangler secret put GEMINI_API_KEY -c wrangler.qsl-gemini.toml
+wrangler secret put GEMINI_AGENT_SERVICE_ACCOUNT_JSON -c wrangler.qsl-gemini.toml
 ```
 
-The deploy guard exposes the targets `qsl-gemini`, `gdei-gemini`, and `pigbibi-gemini`. Each target requires its own GitHub App ID variable (`QSL_GEMINI_GITHUB_APP_ID`, `GDEI_GEMINI_GITHUB_APP_ID`, or `PIGBIBI_GEMINI_GITHUB_APP_ID`), App private key, webhook secret, and Gemini API key. Primary and secondary deployments trust only the explicitly named counterpart App.
+The deploy guard exposes the targets `qsl-gemini`, `gdei-gemini`, and `pigbibi-gemini`. Each target requires its own GitHub App ID variable (`QSL_GEMINI_GITHUB_APP_ID`, `GDEI_GEMINI_GITHUB_APP_ID`, or `PIGBIBI_GEMINI_GITHUB_APP_ID`), App private key, webhook secret, AI Studio fallback key, and Agent Platform service-account JSON. The service account must belong to the configured project and have only the Agent Platform inference role needed for `generateContent`; a cross-project credential is rejected before inference. Primary and secondary deployments trust only the explicitly named counterpart App.
 
 The secondary reviewer must be a separate GitHub App identity. Two models posting through the same bot login do not count as independent reviewers in PrGovernance v4. Configure each deployment's `TRUSTED_REVIEWERS_JSON` with only the other reviewer Apps that are allowed to attest a provider.
 
@@ -39,7 +44,7 @@ The secondary deployment waits an extra grace window before its final quorum che
 
 An explicit `@<reviewer> review` mention forces that App's provider to review the exact head even when another provider has already completed. It never duplicates its own existing receipt.
 
-No API key belongs in TOML, repository variables, comments, or receipts. Keep provider credentials in Worker secrets or the local machine's secret store.
+No API key or service-account JSON belongs in TOML, repository variables, comments, or receipts. Keep provider credentials in Worker secrets or the local machine's secret store.
 
 The local CLI also requires `REVIEWER_LOGIN`; it refuses to spend API credits when it cannot bind existing receipts to its own authenticated App identity.
 
@@ -48,4 +53,5 @@ The local CLI also requires `REVIEWER_LOGIN`; it refuses to spend API credits wh
 ```sh
 npm test
 ```
+
 
