@@ -6,7 +6,37 @@ function base64UrlEncode(bytes) {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
+function derLength(length) {
+  if (length < 0x80) return new Uint8Array([length]);
+  const bytes = [];
+  for (let value = length; value > 0; value >>>= 8) bytes.unshift(value & 0xff);
+  return new Uint8Array([0x80 | bytes.length, ...bytes]);
+}
+
+function concatBytes(...chunks) {
+  const out = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+function wrapPkcs1InPkcs8(pkcs1) {
+  const version = new Uint8Array([0x02, 0x01, 0x00]);
+  const rsaAlgorithmIdentifier = new Uint8Array([
+    0x30, 0x0d,
+    0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+    0x05, 0x00,
+  ]);
+  const privateKey = concatBytes(new Uint8Array([0x04]), derLength(pkcs1.length), pkcs1);
+  const body = concatBytes(version, rsaAlgorithmIdentifier, privateKey);
+  return concatBytes(new Uint8Array([0x30]), derLength(body.length), body);
+}
+
 function pemToPkcs8(pem) {
+  const isPkcs1 = /-----BEGIN RSA PRIVATE KEY-----/.test(pem);
   const b64 = pem
     .replace(/-----BEGIN (?:RSA )?PRIVATE KEY-----/g, '')
     .replace(/-----END (?:RSA )?PRIVATE KEY-----/g, '')
@@ -14,7 +44,7 @@ function pemToPkcs8(pem) {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes.buffer;
+  return (isPkcs1 ? wrapPkcs1InPkcs8(bytes) : bytes).buffer;
 }
 
 export async function verifyWebhookSignature(rawBody, signatureHeader, secret) {
