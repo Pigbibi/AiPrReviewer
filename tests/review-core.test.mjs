@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { generateKeyPairSync, verify as verifySignature } from 'node:crypto';
 import { verifyWebhookSignature, createAppJwt, getGcpAccessToken } from '../packages/review-core/crypto.mjs';
 import { fetchPrContext } from '../packages/review-core/github.mjs';
 import {
@@ -71,6 +72,26 @@ test('createAppJwt produces 3-part RS256 JWT with iss and exp', async () => {
   const claims = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
   assert.equal(claims.iss, '12345');
   assert.equal(claims.exp, 1700000540);
+});
+
+test('createAppJwt accepts GitHub App PKCS#1 private keys', async () => {
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+  });
+  const jwt = await createAppJwt('5964367', privateKey, 1700000000);
+  const parts = jwt.split('.');
+  assert.equal(parts.length, 3);
+  assert.equal(
+    verifySignature(
+      'RSA-SHA256',
+      Buffer.from(`${parts[0]}.${parts[1]}`),
+      publicKey,
+      Buffer.from(parts[2], 'base64url')
+    ),
+    true
+  );
 });
 
 test('policy helpers detect receipts, codex quota, trigger events, and skip lockfiles/fixtures', () => {
