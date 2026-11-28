@@ -285,10 +285,9 @@ export async function executeReviewWithFallback(
   const provider = String(env.AI_REVIEW_PROVIDER || 'deepseek').trim().toLowerCase();
   if (provider === 'gemini') {
     const model = String(env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
-    const agentModel = String(env.GEMINI_AGENT_MODEL || model).trim() || model;
+    const agentModel = String(env.GEMINI_AGENT_MODEL || '').trim();
     const fallbackModels = [
       String(env.GEMINI_FALLBACK_MODEL || '').trim(),
-      String(env.GEMINI_SECOND_FALLBACK_MODEL || '').trim(),
     ].filter((value, index, values) => value && value !== model && values.indexOf(value) === index);
     const projectId = String(env.GEMINI_AGENT_PROJECT_ID || '').trim();
     const serviceAccountJson = String(env.GEMINI_AGENT_SERVICE_ACCOUNT_JSON || '').trim();
@@ -296,6 +295,9 @@ export async function executeReviewWithFallback(
       throw new Error('Agent Platform requires GEMINI_AGENT_PROJECT_ID and GEMINI_AGENT_SERVICE_ACCOUNT_JSON');
     }
     const agentPlatformConfigured = Boolean(projectId && serviceAccountJson);
+    if (agentPlatformConfigured && !agentModel) {
+      throw new Error('Agent Platform requires GEMINI_AGENT_MODEL');
+    }
     const studioCandidates = [model, ...fallbackModels]
       .map(selectedModel => ({ model: selectedModel, useAgentPlatform: false }));
     const candidates = (agentPlatformConfigured
@@ -326,11 +328,10 @@ export async function executeReviewWithFallback(
         }, fetchImpl);
         return { verdict, provider, model: selectedModel };
       } catch (error) {
-        const retryable = error?.status === 429 || error?.status === 503;
+        const retryable = error?.retryable === true || error?.status === 429 || error?.status === 503;
         if (!retryable || index === candidates.length - 1) throw error;
       }
     }
-    throw new Error('Gemini model chain exhausted');
   }
   if (provider !== 'deepseek') throw new Error(`Unsupported API review provider: ${provider}`);
   if (!env.DEEPSEEK_API_KEY) throw new Error('No DeepSeek review credentials configured');

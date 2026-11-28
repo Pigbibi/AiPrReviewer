@@ -195,6 +195,24 @@ test('getGcpAccessToken exchanges signed RS256 assertion for OAuth2 token', asyn
   assert.equal(out.accessToken, 'ya29.synthetic');
   assert.equal(out.projectId, 'synthetic-proj');
   assert.match(capturedBody, /grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer/);
+
+  await assert.rejects(
+    () => getGcpAccessToken(sa, async () => ({ ok: false, status: 503 }), 1700000000),
+    error => {
+      assert.equal(error.status, 503);
+      assert.match(error.message, /HTTP 503/);
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () => getGcpAccessToken(sa, async () => { throw new TypeError('network unavailable'); }, 1700000000),
+    error => {
+      assert.equal(error.retryable, true);
+      assert.equal(error.message, 'GCP OAuth token exchange failed');
+      return true;
+    }
+  );
 });
 
 test('getGcpAccessToken rejects malformed JSON without exposing credential contents', async () => {
@@ -538,6 +556,7 @@ test('Gemini preserves a same-model AI Studio fallback after Agent Platform thro
     env: {
       AI_REVIEW_PROVIDER: 'gemini',
       GEMINI_API_KEY: 'studio-key',
+      GEMINI_AGENT_MODEL: 'gemini-3.8-flash',
       GEMINI_MODEL: 'gemini-3.8-flash',
       GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
       GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
@@ -568,12 +587,59 @@ test('Gemini preserves a same-model AI Studio fallback after Agent Platform thro
   assert.equal(result.verdict.summary, 'Studio fallback');
 });
 
+test('Gemini falls back to AI Studio when Agent Platform token acquisition is retryable', async () => {
+  const calls = [];
+  const tokenError = new Error('capacity');
+  tokenError.status = 503;
+  const result = await executeReviewWithFallback({
+    env: {
+      AI_REVIEW_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'studio-key',
+      GEMINI_AGENT_MODEL: 'gemini-4-neon',
+      GEMINI_MODEL: 'gemini-3.8-flash',
+      GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+      GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+    },
+    messages: { system: 'review', user: 'diff' },
+    getGcpToken: async () => { throw tokenError; },
+  }, async url => {
+    calls.push(url);
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"Studio after OAuth","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /generativelanguage\.googleapis\.com.*gemini-3\.8-flash/);
+  assert.equal(result.model, 'gemini-3.8-flash');
+});
+
+test('Gemini requires an explicit Agent Platform model when Agent identity is configured', async () => {
+  await assert.rejects(
+    () => executeReviewWithFallback({
+      env: {
+        AI_REVIEW_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'studio-key',
+        GEMINI_MODEL: 'gemini-3.8-flash',
+        GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+        GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+      },
+      messages: { system: 'review', user: 'diff' },
+    }),
+    /requires GEMINI_AGENT_MODEL/
+  );
+});
+
 test('Gemini fails closed when only half of Agent Platform identity is configured', async () => {
   await assert.rejects(
     () => executeReviewWithFallback({
       env: {
         AI_REVIEW_PROVIDER: 'gemini',
         GEMINI_API_KEY: 'studio-key',
+        GEMINI_AGENT_MODEL: 'gemini-4-neon',
         GEMINI_MODEL: 'gemini-4-neon',
         GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
       },
@@ -589,6 +655,7 @@ test('Gemini rejects a service account from the wrong Agent Platform project', a
       env: {
         AI_REVIEW_PROVIDER: 'gemini',
         GEMINI_API_KEY: 'studio-key',
+        GEMINI_AGENT_MODEL: 'gemini-4-neon',
         GEMINI_MODEL: 'gemini-4-neon',
         GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
         GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
@@ -607,6 +674,7 @@ test('Gemini rejects an Agent Platform service account with no project identity 
       env: {
         AI_REVIEW_PROVIDER: 'gemini',
         GEMINI_API_KEY: 'studio-key',
+        GEMINI_AGENT_MODEL: 'gemini-4-neon',
         GEMINI_MODEL: 'gemini-4-neon',
         GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
         GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',

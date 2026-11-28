@@ -117,16 +117,25 @@ export async function getGcpAccessToken(saJson, fetchImpl = fetch, nowSec = Math
   const sig = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(signingInput)));
   const assertion = `${signingInput}.${base64UrlEncode(sig)}`;
 
-  const res = await fetchImpl(tokenUri, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion,
-    }).toString(),
-  });
+  let res;
+  try {
+    res = await fetchImpl(tokenUri, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion,
+      }).toString(),
+    });
+  } catch {
+    const error = new Error('GCP OAuth token exchange failed');
+    error.retryable = true;
+    throw error;
+  }
   if (!res.ok) {
-    throw new Error(`GCP OAuth token exchange failed with HTTP ${res.status}`);
+    const error = new Error(`GCP OAuth token exchange failed with HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
   }
   const data = await res.json();
   if (!data?.access_token) throw new Error('Missing access_token in GCP OAuth response');
