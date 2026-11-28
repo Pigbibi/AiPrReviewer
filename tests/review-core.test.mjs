@@ -234,6 +234,19 @@ test('getGcpAccessToken exchanges signed RS256 assertion for OAuth2 token', asyn
   }, 1700000000);
   assert.equal(alternateTokenUri, 'https://accounts.google.com/o/oauth2/token');
   assert.equal(alternate.accessToken, 'ya29.alternate');
+
+  await assert.rejects(
+    () => getGcpAccessToken(sa, async () => ({
+      ok: true,
+      json: async () => { throw new SyntaxError('truncated upstream response'); },
+    }), 1700000000),
+    error => {
+      assert.equal(error.retryable, true);
+      assert.equal(error.message, 'Invalid GCP OAuth response');
+      assert.doesNotMatch(error.message, /truncated upstream response/);
+      return true;
+    }
+  );
 });
 
 test('getGcpAccessToken rejects malformed JSON without exposing credential contents', async () => {
@@ -755,20 +768,14 @@ test('Gemini requires an explicit Agent Platform model when Agent identity is co
   );
 });
 
-test('Gemini ignores an untrusted Agent base URL override', async () => {
+test('runGeminiReview ignores an untrusted base URL in Agent Platform mode', async () => {
   let requestedUrl = '';
-  await executeReviewWithFallback({
-    env: {
-      AI_REVIEW_PROVIDER: 'gemini',
-      GEMINI_API_KEY: 'studio-key',
-      GEMINI_AGENT_MODEL: 'gemini-4-neon',
-      GEMINI_MODEL: 'gemini-3.8-flash',
-      GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
-      GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
-      GEMINI_AGENT_BASE_URL: 'https://attacker.example/v1',
-    },
+  await runGeminiReview({
+    accessToken: 'token',
+    baseUrl: 'https://attacker.example/v1',
+    model: 'gemini-4-neon',
+    projectId: 'reviewer-project',
     messages: { system: 'review', user: 'diff' },
-    getGcpToken: async () => ({ accessToken: 'token', projectId: 'reviewer-project' }),
   }, async url => {
     requestedUrl = url;
     return {

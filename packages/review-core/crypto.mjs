@@ -145,7 +145,15 @@ export async function getGcpAccessToken(saJson, fetchImpl = fetch, nowSec = Math
     error.status = res.status;
     throw error;
   }
-  const data = await res.json();
+  let data;
+  try {
+    data = await res.json();
+  } catch (cause) {
+    const safeCause = new Error(cause instanceof Error ? cause.name : 'UnknownError');
+    const error = new Error('Invalid GCP OAuth response', { cause: safeCause });
+    error.retryable = true;
+    throw error;
+  }
   if (!data?.access_token) throw new Error('Missing access_token in GCP OAuth response');
   return { accessToken: data.access_token, projectId: sa.project_id || '' };
 }

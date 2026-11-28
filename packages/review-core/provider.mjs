@@ -175,9 +175,9 @@ export async function runGeminiReview({
   const agentPlatformBase = locationName === 'global'
     ? 'https://aiplatform.googleapis.com/v1'
     : `https://${locationName}-aiplatform.googleapis.com/v1`;
-  const base = String(baseUrl || (useAgentPlatform
+  const base = String(useAgentPlatform
     ? agentPlatformBase
-    : 'https://generativelanguage.googleapis.com/v1beta')).replace(/\/+$/, '');
+    : (baseUrl || 'https://generativelanguage.googleapis.com/v1beta')).replace(/\/+$/, '');
   const endpoint = useAgentPlatform
     ? `${base}/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(locationName)}/publishers/google/models/${encodeURIComponent(modelName)}:generateContent`
     : `${base}/models/${encodeURIComponent(modelName)}:generateContent`;
@@ -294,9 +294,8 @@ export async function executeReviewWithFallback(
   if (provider === 'gemini') {
     const model = String(env.GEMINI_MODEL || '').trim() || 'gemini-3.8-flash';
     const agentModel = String(env.GEMINI_AGENT_MODEL || '').trim();
-    const fallbackModels = [
-      String(env.GEMINI_FALLBACK_MODEL || '').trim(),
-    ].filter((value, index, values) => value && value !== model && values.indexOf(value) === index);
+    const fallbackModel = String(env.GEMINI_FALLBACK_MODEL || '').trim();
+    const fallbackModels = fallbackModel && fallbackModel !== model ? [fallbackModel] : [];
     const projectId = String(env.GEMINI_AGENT_PROJECT_ID || '').trim();
     const serviceAccountJson = String(env.GEMINI_AGENT_SERVICE_ACCOUNT_JSON || '').trim();
     if (Boolean(projectId) !== Boolean(serviceAccountJson)) {
