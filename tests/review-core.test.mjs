@@ -195,6 +195,70 @@ test('getGcpAccessToken exchanges signed RS256 assertion for OAuth2 token', asyn
   assert.equal(out.accessToken, 'ya29.synthetic');
   assert.equal(out.projectId, 'synthetic-proj');
   assert.match(capturedBody, /grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer/);
+
+  await assert.rejects(
+    () => getGcpAccessToken(sa, async () => ({ ok: false, status: 503 }), 1700000000),
+    error => {
+      assert.equal(error.status, 503);
+      assert.match(error.message, /HTTP 503/);
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () => getGcpAccessToken(sa, async () => { throw new TypeError('network unavailable'); }, 1700000000),
+    error => {
+      assert.equal(error.retryable, true);
+      assert.equal(error.message, 'GCP OAuth token exchange failed');
+      return true;
+    }
+  );
+
+  let invalidTokenUriFetches = 0;
+  await assert.rejects(
+    () => getGcpAccessToken({ ...sa, token_uri: 'not-a-valid-oauth-url' }, async () => {
+      invalidTokenUriFetches += 1;
+      return { ok: true, json: async () => ({ access_token: 'must-not-be-used' }) };
+    }, 1700000000),
+    /Invalid GCP OAuth token URI/
+  );
+  assert.equal(invalidTokenUriFetches, 0);
+
+  let alternateTokenUri = '';
+  const alternate = await getGcpAccessToken({
+    ...sa,
+    token_uri: 'https://accounts.google.com/o/oauth2/token',
+  }, async url => {
+    alternateTokenUri = url;
+    return { ok: true, json: async () => ({ access_token: 'ya29.alternate' }) };
+  }, 1700000000);
+  assert.equal(alternateTokenUri, 'https://accounts.google.com/o/oauth2/token');
+  assert.equal(alternate.accessToken, 'ya29.alternate');
+
+  await assert.rejects(
+    () => getGcpAccessToken(sa, async () => ({
+      ok: true,
+      json: async () => { throw new SyntaxError('truncated upstream response'); },
+    }), 1700000000),
+    error => {
+      assert.equal(error.retryable, true);
+      assert.equal(error.message, 'Invalid GCP OAuth response');
+      assert.doesNotMatch(error.message, /truncated upstream response/);
+      return true;
+    }
+  );
+});
+
+test('getGcpAccessToken rejects malformed JSON without exposing credential contents', async () => {
+  const credentialFragment = 'PRIVATE-KEY-MATERIAL-MUST-NOT-LEAK';
+  await assert.rejects(
+    () => getGcpAccessToken(`{"private_key":"${credentialFragment}`),
+    error => {
+      assert.equal(error.message, 'Invalid GCP service account JSON');
+      assert.doesNotMatch(error.message, new RegExp(credentialFragment));
+      return true;
+    }
+  );
 });
 
 test('fetchPrContext paginates the complete changed-file list and rejects incomplete coverage', async () => {
@@ -442,6 +506,409 @@ test('Gemini retries 429 and 503 with the configured fallback model only', async
   assert.equal(nonRetryableCalls, 1);
 });
 
+test('Gemini without Agent Platform starts with the first AI Studio fallback', async () => {
+  const calls = [];
+  const result = await executeReviewWithFallback({
+    env: {
+      AI_REVIEW_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'studio-key',
+      GEMINI_AGENT_MODEL: 'gemini-4-neon',
+      GEMINI_MODEL: 'gemini-3.8-flash',
+      GEMINI_FALLBACK_MODEL: 'gemini-3.5-flash-lite',
+    },
+    messages: { system: 'review', user: 'diff' },
+  }, async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"Studio OK","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /gemini-3\.8-flash:generateContent/);
+  assert.doesNotMatch(calls[0].url, /gemini-4-neon/);
+  assert.equal(calls[0].body.generationConfig.temperature, 0.1);
+  assert.equal(result.model, 'gemini-3.8-flash');
+});
+
+test('Gemini uses Agent Platform Neon first, then both AI Studio fallbacks', async () => {
+  const calls = [];
+  let tokenCalls = 0;
+  const ok = summary => ({
+    ok: true,
+    json: async () => ({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({
+        summary, unresolved_findings: false, findings: [],
+      }) }] } }],
+    }),
+  });
+  const result = await executeReviewWithFallback({
+    env: {
+      AI_REVIEW_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'studio-key',
+      GEMINI_AGENT_MODEL: 'gemini-4-neon',
+      GEMINI_MODEL: 'gemini-3.8-flash',
+      GEMINI_FALLBACK_MODEL: 'gemini-3.5-flash-lite',
+      GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+      GEMINI_AGENT_LOCATION: 'global',
+      GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+    },
+    messages: { system: 'review', user: 'diff' },
+    getGcpToken: async credential => {
+      tokenCalls += 1;
+      assert.equal(credential, '{"synthetic":true}');
+      return { accessToken: 'short-lived-token', projectId: 'reviewer-project' };
+    },
+  }, async (url, options) => {
+    calls.push({ url, options });
+    return calls.length < 3 ? { ok: false, status: calls.length === 1 ? 429 : 503 } : ok('lite');
+  });
+
+  assert.equal(tokenCalls, 1);
+  assert.equal(calls.length, 3);
+  assert.equal(
+    calls[0].url,
+    'https://aiplatform.googleapis.com/v1/projects/reviewer-project/locations/global/publishers/google/models/gemini-4-neon:generateContent'
+  );
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer short-lived-token');
+  assert.equal(calls[0].options.headers['x-goog-api-key'], undefined);
+  assert.equal(JSON.parse(calls[0].options.body).generationConfig.temperature, 0.1);
+  assert.match(calls[1].url, /generativelanguage\.googleapis\.com\/v1beta\/models\/gemini-3\.8-flash/);
+  assert.equal(calls[1].options.headers['x-goog-api-key'], 'studio-key');
+  assert.match(calls[2].url, /gemini-3\.5-flash-lite:generateContent/);
+  assert.equal(result.model, 'gemini-3.5-flash-lite');
+  assert.equal(result.verdict.summary, 'lite');
+});
+
+test('Gemini preserves a same-model AI Studio fallback after Agent Platform throttling', async () => {
+  const calls = [];
+  let tokenCalls = 0;
+  const result = await executeReviewWithFallback({
+    env: {
+      AI_REVIEW_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'studio-key',
+      GEMINI_AGENT_MODEL: 'gemini-3.8-flash',
+      GEMINI_MODEL: 'gemini-3.8-flash',
+      GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+      GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+    },
+    messages: { system: 'review', user: 'diff' },
+    getGcpToken: async () => {
+      tokenCalls += 1;
+      return { accessToken: 'short-lived-token', projectId: 'reviewer-project' };
+    },
+  }, async (url, options) => {
+    calls.push({ url, headers: options.headers });
+    if (calls.length === 1) return { ok: false, status: 429 };
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"Studio fallback","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+
+  assert.equal(tokenCalls, 1);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url, /aiplatform\.googleapis\.com.*gemini-3\.8-flash/);
+  assert.equal(calls[0].headers.Authorization, 'Bearer short-lived-token');
+  assert.match(calls[1].url, /generativelanguage\.googleapis\.com.*gemini-3\.8-flash/);
+  assert.equal(calls[1].headers['x-goog-api-key'], 'studio-key');
+  assert.equal(result.model, 'gemini-3.8-flash');
+  assert.equal(result.verdict.summary, 'Studio fallback');
+});
+
+test('Gemini falls back to AI Studio when Agent Platform token acquisition is retryable', async () => {
+  const calls = [];
+  const tokenError = new Error('capacity');
+  tokenError.status = 503;
+  const result = await executeReviewWithFallback({
+    env: {
+      AI_REVIEW_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'studio-key',
+      GEMINI_AGENT_MODEL: 'gemini-4-neon',
+      GEMINI_MODEL: 'gemini-3.8-flash',
+      GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+      GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+    },
+    messages: { system: 'review', user: 'diff' },
+    getGcpToken: async () => { throw tokenError; },
+  }, async url => {
+    calls.push(url);
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"Studio after OAuth","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /generativelanguage\.googleapis\.com.*gemini-3\.8-flash/);
+  assert.equal(result.model, 'gemini-3.8-flash');
+});
+
+test('Gemini falls back to AI Studio when Agent Platform inference transport fails', async () => {
+  const calls = [];
+  const result = await executeReviewWithFallback({
+    env: {
+      AI_REVIEW_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'studio-key',
+      GEMINI_AGENT_MODEL: 'gemini-4-neon',
+      GEMINI_MODEL: 'gemini-3.8-flash',
+      GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+      GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+    },
+    messages: { system: 'review', user: 'diff' },
+    getGcpToken: async () => ({ accessToken: 'token', projectId: 'reviewer-project' }),
+  }, async url => {
+    calls.push(url);
+    if (calls.length === 1) throw new TypeError('connection reset');
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"transport fallback","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+  assert.equal(calls.length, 2);
+  assert.match(calls[0], /aiplatform\.googleapis\.com/);
+  assert.match(calls[1], /generativelanguage\.googleapis\.com/);
+  assert.equal(result.model, 'gemini-3.8-flash');
+});
+
+test('Gemini fails closed on non-retryable Agent Platform token errors', async () => {
+  for (const status of [401, 403]) {
+    let studioCalls = 0;
+    const tokenError = new Error('auth failure');
+    tokenError.status = status;
+    await assert.rejects(
+      () => executeReviewWithFallback({
+        env: {
+          AI_REVIEW_PROVIDER: 'gemini',
+          GEMINI_API_KEY: 'studio-key',
+          GEMINI_AGENT_MODEL: 'gemini-4-neon',
+          GEMINI_MODEL: 'gemini-3.8-flash',
+          GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+          GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+        },
+        messages: { system: 'review', user: 'diff' },
+        getGcpToken: async () => { throw tokenError; },
+      }, async () => {
+        studioCalls += 1;
+        throw new Error('studio must not run');
+      }),
+      error => error === tokenError
+    );
+    assert.equal(studioCalls, 0);
+  }
+});
+
+test('Gemini fails closed on non-retryable Agent Platform inference errors', async () => {
+  for (const status of [401, 403]) {
+    let inferenceCalls = 0;
+    await assert.rejects(
+      () => executeReviewWithFallback({
+        env: {
+          AI_REVIEW_PROVIDER: 'gemini',
+          GEMINI_API_KEY: 'studio-key',
+          GEMINI_AGENT_MODEL: 'gemini-4-neon',
+          GEMINI_MODEL: 'gemini-3.8-flash',
+          GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+          GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+        },
+        messages: { system: 'review', user: 'diff' },
+        getGcpToken: async () => ({ accessToken: 'token', projectId: 'reviewer-project' }),
+      }, async () => {
+        inferenceCalls += 1;
+        return { ok: false, status };
+      }),
+      error => error?.status === status
+    );
+    assert.equal(inferenceCalls, 1);
+  }
+});
+
+test('Gemini normalizes a blank Studio model to its effective default', async () => {
+  const result = await executeReviewWithFallback({
+    env: {
+      AI_REVIEW_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'studio-key',
+      GEMINI_MODEL: '   ',
+    },
+    messages: { system: 'review', user: 'diff' },
+  }, async url => {
+    assert.match(url, /gemini-3\.8-flash/);
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"default","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+  assert.equal(result.model, 'gemini-3.8-flash');
+});
+
+test('Gemini requires an explicit Agent Platform model when Agent identity is configured', async () => {
+  await assert.rejects(
+    () => executeReviewWithFallback({
+      env: {
+        AI_REVIEW_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'studio-key',
+        GEMINI_MODEL: 'gemini-3.8-flash',
+        GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+        GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+      },
+      messages: { system: 'review', user: 'diff' },
+    }),
+    /requires GEMINI_AGENT_MODEL/
+  );
+});
+
+test('runGeminiReview ignores an untrusted base URL in Agent Platform mode', async () => {
+  let requestedUrl = '';
+  await runGeminiReview({
+    accessToken: 'token',
+    baseUrl: 'https://attacker.example/v1',
+    model: 'gemini-4-neon',
+    projectId: 'reviewer-project',
+    messages: { system: 'review', user: 'diff' },
+  }, async url => {
+    requestedUrl = url;
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"safe host","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+  assert.match(requestedUrl, /^https:\/\/aiplatform\.googleapis\.com\//);
+  assert.doesNotMatch(requestedUrl, /attacker\.example/);
+});
+
+test('Gemini fails closed on malformed Agent credentials and invalid location', async () => {
+  let inferenceCalls = 0;
+  const baseEnv = {
+    AI_REVIEW_PROVIDER: 'gemini',
+    GEMINI_API_KEY: 'studio-key',
+    GEMINI_AGENT_MODEL: 'gemini-4-neon',
+    GEMINI_MODEL: 'gemini-3.8-flash',
+    GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+  };
+
+  await assert.rejects(
+    () => executeReviewWithFallback({
+      env: { ...baseEnv, GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{bad-json' },
+      messages: { system: 'review', user: 'diff' },
+    }, async () => {
+      inferenceCalls += 1;
+      throw new Error('inference must not run');
+    }),
+    /Invalid GCP service account JSON/
+  );
+  assert.equal(inferenceCalls, 0);
+
+  await assert.rejects(
+    () => executeReviewWithFallback({
+      env: {
+        ...baseEnv,
+        GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+        GEMINI_AGENT_LOCATION: 'global/../../attacker',
+      },
+      messages: { system: 'review', user: 'diff' },
+      getGcpToken: async () => ({ accessToken: 'token', projectId: 'reviewer-project' }),
+    }, async () => {
+      inferenceCalls += 1;
+      throw new Error('inference must not run');
+    }),
+    /Invalid Agent Platform location/
+  );
+  assert.equal(inferenceCalls, 0);
+});
+
+test('Gemini fails closed when only half of Agent Platform identity is configured', async () => {
+  await assert.rejects(
+    () => executeReviewWithFallback({
+      env: {
+        AI_REVIEW_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'studio-key',
+        GEMINI_AGENT_MODEL: 'gemini-4-neon',
+        GEMINI_MODEL: 'gemini-4-neon',
+        GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+      },
+      messages: { system: 'review', user: 'diff' },
+    }),
+    /requires GEMINI_AGENT_PROJECT_ID and GEMINI_AGENT_SERVICE_ACCOUNT_JSON/
+  );
+});
+
+test('Gemini rejects a service account from the wrong Agent Platform project', async () => {
+  await assert.rejects(
+    () => executeReviewWithFallback({
+      env: {
+        AI_REVIEW_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'studio-key',
+        GEMINI_AGENT_MODEL: 'gemini-4-neon',
+        GEMINI_MODEL: 'gemini-4-neon',
+        GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+        GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+      },
+      messages: { system: 'review', user: 'diff' },
+      getGcpToken: async () => ({ accessToken: 'token', projectId: 'other-project' }),
+    }),
+    /service account project does not match/
+  );
+});
+
+test('Gemini rejects an Agent Platform service account with no project identity before inference', async () => {
+  let inferenceCalls = 0;
+  await assert.rejects(
+    () => executeReviewWithFallback({
+      env: {
+        AI_REVIEW_PROVIDER: 'gemini',
+        GEMINI_API_KEY: 'studio-key',
+        GEMINI_AGENT_MODEL: 'gemini-4-neon',
+        GEMINI_MODEL: 'gemini-4-neon',
+        GEMINI_AGENT_PROJECT_ID: 'reviewer-project',
+        GEMINI_AGENT_SERVICE_ACCOUNT_JSON: '{"synthetic":true}',
+      },
+      messages: { system: 'review', user: 'diff' },
+      getGcpToken: async () => ({ accessToken: 'token', projectId: '' }),
+    }, async () => {
+      inferenceCalls += 1;
+      throw new Error('inference must not run');
+    }),
+    /service account project does not match/
+  );
+  assert.equal(inferenceCalls, 0);
+});
+
+test('Gemini derives the regional Agent Platform host from location', async () => {
+  let requestedUrl = '';
+  await runGeminiReview({
+    accessToken: 'token',
+    projectId: 'reviewer-project',
+    location: 'us-central1',
+    model: 'gemini-4-neon',
+    messages: { system: 'review', user: 'diff' },
+  }, async url => {
+    requestedUrl = url;
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: '{"summary":"OK","unresolved_findings":false,"findings":[]}' }] } }],
+      }),
+    };
+  });
+  assert.equal(
+    requestedUrl,
+    'https://us-central1-aiplatform.googleapis.com/v1/projects/reviewer-project/locations/us-central1/publishers/google/models/gemini-4-neon:generateContent'
+  );
+});
+
 test('runGeminiReview parses structured output and fails closed on HTTP errors', async () => {
   const messages = { system: 'strict reviewer', user: 'diff' };
   const verdict = await runGeminiReview(
@@ -683,4 +1150,5 @@ test('isDocOnlyChange calibrates doc-only prompts and parseVerdict suppresses lo
   }));
   assert.equal(medium.unresolved_findings, true);
 });
+
 

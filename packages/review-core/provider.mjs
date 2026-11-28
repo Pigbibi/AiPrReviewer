@@ -1,5 +1,7 @@
 // Provider adapter for OpenAI-compatible Chat Completions API and AIService bridge.
 
+import { getGcpAccessToken } from './crypto.mjs';
+
 const HIGH_RISK_SECURITY_PATH_RE =
   /^(?:\.github\/(?:workflows|actions)\/|(?:.*\/)?action\.ya?ml$|packages\/review-core\/|adapters\/(?:cloudflare-workflow|local-cli)\/|deploy\/|ops\/|.*wrangler.*\.toml$|.*(?:auth|oauth|login|session|jwt|token|secret|key|crypto|webhook|signature|permission|rbac|iam|payment|charge|order|trade|execution|risk|sql|migration|security).*)/i;
 const DOC_ONLY_PATH_RE = /\.(?:md|txt|rst)$/i;
@@ -151,26 +153,59 @@ export async function runDeepSeekReview({ apiKey, baseUrl, model, messages }, fe
   return parseVerdict(data?.choices?.[0]?.message?.content);
 }
 
-export async function runGeminiReview({ apiKey, baseUrl, model, messages }, fetchImpl = fetch) {
-  if (!apiKey) throw new Error('Missing GEMINI_API_KEY');
+export async function runGeminiReview({
+  apiKey,
+  accessToken,
+  baseUrl,
+  model,
+  messages,
+  projectId,
+  location = 'global',
+}, fetchImpl = fetch) {
   const modelName = model || 'gemini-3.8-flash';
-  const base = String(baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
-  const endpoint = `${base}/models/${encodeURIComponent(modelName)}:generateContent`;
-  const res = await fetchImpl(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey,
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: messages.system }] },
-      contents: [{ role: 'user', parts: [{ text: messages.user }] }],
-      generationConfig: {
-        temperature: 0.1,
-        responseMimeType: 'application/json',
+  const locationName = String(location || 'global').trim() || 'global';
+  const useAgentPlatform = Boolean(projectId || accessToken);
+  if (useAgentPlatform && (!projectId || !accessToken)) {
+    throw new Error('Agent Platform requires project ID and access token');
+  }
+  if (!useAgentPlatform && !apiKey) throw new Error('Missing GEMINI_API_KEY');
+  if (useAgentPlatform && !/^[a-z0-9-]+$/.test(locationName)) {
+    throw new Error('Invalid Agent Platform location');
+  }
+  const agentPlatformBase = locationName === 'global'
+    ? 'https://aiplatform.googleapis.com/v1'
+    : `https://${locationName}-aiplatform.googleapis.com/v1`;
+  const base = String(useAgentPlatform
+    ? agentPlatformBase
+    : (baseUrl || 'https://generativelanguage.googleapis.com/v1beta')).replace(/\/+$/, '');
+  const endpoint = useAgentPlatform
+    ? `${base}/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(locationName)}/publishers/google/models/${encodeURIComponent(modelName)}:generateContent`
+    : `${base}/models/${encodeURIComponent(modelName)}:generateContent`;
+  let res;
+  try {
+    res = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(useAgentPlatform
+          ? { Authorization: `Bearer ${accessToken}` }
+          : { 'x-goog-api-key': apiKey }),
       },
-    }),
-  });
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: messages.system }] },
+        contents: [{ role: 'user', parts: [{ text: messages.user }] }],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: 'application/json',
+        },
+      }),
+    });
+  } catch (cause) {
+    const safeCause = new Error(cause instanceof Error ? cause.name : 'UnknownError');
+    const error = new Error('Gemini API transport failed', { cause: safeCause });
+    error.retryable = true;
+    throw error;
+  }
   if (!res.ok) {
     const error = new Error(`Gemini API failed with HTTP ${res.status}`);
     error.status = res.status;
@@ -251,25 +286,58 @@ export function mergeBatchVerdicts(batchResults) {
   };
 }
 
-export async function executeReviewWithFallback({ env, messages }, fetchImpl = fetch) {
+export async function executeReviewWithFallback(
+  { env, messages, getGcpToken = getGcpAccessToken },
+  fetchImpl = fetch
+) {
   const provider = String(env.AI_REVIEW_PROVIDER || 'deepseek').trim().toLowerCase();
   if (provider === 'gemini') {
-    const model = env.GEMINI_MODEL || 'gemini-3.8-flash';
+    const model = String(env.GEMINI_MODEL || '').trim() || 'gemini-3.8-flash';
+    const agentModel = String(env.GEMINI_AGENT_MODEL || '').trim();
     const fallbackModel = String(env.GEMINI_FALLBACK_MODEL || '').trim();
-    const review = selectedModel => runGeminiReview({
-      apiKey: env.GEMINI_API_KEY,
-      baseUrl: env.GEMINI_BASE_URL,
-      model: selectedModel,
-      messages,
-    }, fetchImpl);
-    try {
-      const verdict = await review(model);
-      return { verdict, provider, model };
-    } catch (error) {
-      const retryable = error?.status === 429 || error?.status === 503;
-      if (!retryable || !fallbackModel || fallbackModel === model) throw error;
-      const verdict = await review(fallbackModel);
-      return { verdict, provider, model: fallbackModel };
+    const fallbackModels = fallbackModel && fallbackModel !== model ? [fallbackModel] : [];
+    const projectId = String(env.GEMINI_AGENT_PROJECT_ID || '').trim();
+    const serviceAccountJson = String(env.GEMINI_AGENT_SERVICE_ACCOUNT_JSON || '').trim();
+    if (Boolean(projectId) !== Boolean(serviceAccountJson)) {
+      throw new Error('Agent Platform requires GEMINI_AGENT_PROJECT_ID and GEMINI_AGENT_SERVICE_ACCOUNT_JSON');
+    }
+    const agentPlatformConfigured = Boolean(projectId && serviceAccountJson);
+    if (agentPlatformConfigured && !agentModel) {
+      throw new Error('Agent Platform requires GEMINI_AGENT_MODEL');
+    }
+    const studioCandidates = [model, ...fallbackModels]
+      .map(selectedModel => ({ model: selectedModel, useAgentPlatform: false }));
+    const candidates = (agentPlatformConfigured
+      ? [{ model: agentModel, useAgentPlatform: true }, ...studioCandidates]
+      : studioCandidates)
+      .filter((candidate, index, values) => values.findIndex(value => (
+        value.model === candidate.model
+        && value.useAgentPlatform === candidate.useAgentPlatform
+      )) === index);
+
+    for (let index = 0; index < candidates.length; index += 1) {
+      const { model: selectedModel, useAgentPlatform: primaryAgentCall } = candidates[index];
+      try {
+        const token = primaryAgentCall
+          ? await getGcpToken(serviceAccountJson, fetchImpl)
+          : undefined;
+        if (primaryAgentCall && token?.projectId !== projectId) {
+          throw new Error('Agent Platform service account project does not match GEMINI_AGENT_PROJECT_ID');
+        }
+        const verdict = await runGeminiReview({
+          apiKey: env.GEMINI_API_KEY,
+          accessToken: token?.accessToken,
+          baseUrl: primaryAgentCall ? undefined : env.GEMINI_BASE_URL,
+          model: selectedModel,
+          messages,
+          projectId: primaryAgentCall ? projectId : undefined,
+          location: env.GEMINI_AGENT_LOCATION || 'global',
+        }, fetchImpl);
+        return { verdict, provider, model: selectedModel };
+      } catch (error) {
+        const retryable = error?.retryable === true || error?.status === 429 || error?.status === 503;
+        if (!retryable || index === candidates.length - 1) throw error;
+      }
     }
   }
   if (provider !== 'deepseek') throw new Error(`Unsupported API review provider: ${provider}`);
@@ -283,4 +351,5 @@ export async function executeReviewWithFallback({ env, messages }, fetchImpl = f
   }, fetchImpl);
   return { verdict, provider, model };
 }
+
 

@@ -87,13 +87,25 @@ export async function createAppJwt(appId, privateKeyPem, nowSec = Math.floor(Dat
 }
 
 export async function getGcpAccessToken(saJson, fetchImpl = fetch, nowSec = Math.floor(Date.now() / 1000)) {
-  const sa = typeof saJson === 'string' ? JSON.parse(saJson) : saJson;
+  let sa;
+  try {
+    sa = typeof saJson === 'string' ? JSON.parse(saJson) : saJson;
+  } catch {
+    throw new Error('Invalid GCP service account JSON');
+  }
   if (!sa?.client_email || !sa?.private_key) {
     throw new Error('Invalid GCP service account JSON');
   }
   const enc = new TextEncoder();
   const header = base64UrlEncode(enc.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
   const tokenUri = sa.token_uri || 'https://oauth2.googleapis.com/token';
+  const allowedTokenUris = new Set([
+    'https://oauth2.googleapis.com/token',
+    'https://accounts.google.com/o/oauth2/token',
+  ]);
+  if (!allowedTokenUris.has(tokenUri)) {
+    throw new Error('Invalid GCP OAuth token URI');
+  }
   const payload = base64UrlEncode(enc.encode(JSON.stringify({
     iss: sa.client_email,
     scope: 'https://www.googleapis.com/auth/cloud-platform',
@@ -112,18 +124,37 @@ export async function getGcpAccessToken(saJson, fetchImpl = fetch, nowSec = Math
   const sig = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(signingInput)));
   const assertion = `${signingInput}.${base64UrlEncode(sig)}`;
 
-  const res = await fetchImpl(tokenUri, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion,
-    }).toString(),
-  });
-  if (!res.ok) {
-    throw new Error(`GCP OAuth token exchange failed with HTTP ${res.status}`);
+  let res;
+  try {
+    res = await fetchImpl(tokenUri, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion,
+      }).toString(),
+    });
+  } catch (cause) {
+    const safeCause = new Error(cause instanceof Error ? cause.name : 'UnknownError');
+    const error = new Error('GCP OAuth token exchange failed', { cause: safeCause });
+    error.retryable = true;
+    throw error;
   }
-  const data = await res.json();
+  if (!res.ok) {
+    const error = new Error(`GCP OAuth token exchange failed with HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
+  let data;
+  try {
+    data = await res.json();
+  } catch (cause) {
+    const safeCause = new Error(cause instanceof Error ? cause.name : 'UnknownError');
+    const error = new Error('Invalid GCP OAuth response', { cause: safeCause });
+    error.retryable = true;
+    throw error;
+  }
   if (!data?.access_token) throw new Error('Missing access_token in GCP OAuth response');
   return { accessToken: data.access_token, projectId: sa.project_id || '' };
 }
+

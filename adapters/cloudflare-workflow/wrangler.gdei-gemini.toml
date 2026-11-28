@@ -5,7 +5,10 @@ compatibility_date = "2026-01-01"
 [vars]
 AI_REVIEW_PROVIDER = "gemini"
 AI_REVIEW_PROVIDER_ROLE = "secondary"
+GEMINI_AGENT_MODEL = "gemini-4-neon"
 GEMINI_MODEL = "gemini-3.8-flash"
+GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite"
+GEMINI_AGENT_LOCATION = "global"
 REVIEWER_LOGIN = "gdei-gemini-reviewer[bot]"
 TRUSTED_REVIEWERS_JSON = '{"gdei-ai-reviewer[bot]":["deepseek"]}'
 CODEX_PROBE_MINUTES = "2"
@@ -21,3 +24,4 @@ id = "1ec69db20d9347cda77ada2c5adb1585"
 name = "gdei-gemini-pr-review-workflow"
 binding = "PR_REVIEW_WORKFLOW"
 class_name = "PrReviewWorkflow"
+
